@@ -100,8 +100,12 @@
 
 ### 1. 环境准备
 
-- .NET SDK 6.0 或更高（项目目标框架 `net6.0`）
-- 已安装好 BepInEx 6 IL2CPP 的游戏目录（构建时需要引用其中的 `BepInEx/core` 与 `BepInEx/interop`）
+- **.NET SDK 8.0（必需）**。已验证构建环境为 `8.0.425`。
+  - 项目目标框架仍为 `net6.0`，但请统一使用 8.0 SDK 构建；`dotnet --version` 应输出 `8.x`。
+  - 若机器上装有多个 SDK，建议用 `dotnet --list-sdks` 确认实际使用的版本。
+- 已安装好 BepInEx 6 IL2CPP 的游戏目录（构建时需要引用其中的 `BepInEx/core` 与 `BepInEx/interop`）。
+
+> 未安装 .NET 8.0 SDK 时，`dotnet build` 会因缺少对应 SDK/目标包而失败；请先从 https://dotnet.microsoft.com/download/dotnet/8.0 安装。
 
 ### 2. 修改游戏路径
 
@@ -118,6 +122,14 @@ dotnet build -c Release -p:GameDir="D:\你的路径\Vampire Crawlers"
 ```
 
 ### 3. 编译
+
+先确认 SDK 版本：
+
+```powershell
+dotnet --version    # 应输出 8.x
+```
+
+再执行编译：
 
 ```powershell
 dotnet build -c Release
