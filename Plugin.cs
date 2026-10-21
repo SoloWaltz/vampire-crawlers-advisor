@@ -14,7 +14,7 @@ namespace VcAdvisor
         public const string PluginGuid = "vampirecrawlers.advisor";
         public const string PluginName = "Vampire Crawlers 打牌助手";
         // 版本规则：每次内容新增或修改，次版本号 +0.1（1.0.0 → 1.1.0 → 1.2.0 …）
-        public const string PluginVersion = "1.1.0";
+        public const string PluginVersion = "1.3.0";
 
         internal static ManualLogSource Logger;
 
@@ -178,6 +178,7 @@ namespace VcAdvisor
             foreach (var r in rows)
                 sig.Append(r.Kind).Append(':').Append(r.Indent).Append(':').Append(r.Rank).Append(':')
                    .Append(r.Icon).Append(':').Append(r.IconColor).Append(':').Append(r.Hero ? '1' : '0').Append(':')
+                   .Append(r.Card ? '1' : '0').Append(':')
                    .Append(r.Text).Append('\n');
             string key = sig.ToString();
 
@@ -225,6 +226,10 @@ namespace VcAdvisor
                 R(rows, string.Format("记录 {0} 条 ｜ {1}（F10 切换）",
                     BattleLog.Records, BattleLog.SandboxMode ? "沙盒模式·不计入学习" : "训练模式"), 4);
             }
+
+            // 英雄组合（战斗界面左中）：放在顶部，便于随时核对当前阵容
+            if (s.Heroes.Count > 0)
+                R(rows, "英雄：" + string.Join(" · ", s.Heroes.ToArray()), 1);
 
             // —— ① 出牌顺序（核心）——
             R(rows, "", 2);
@@ -281,6 +286,7 @@ namespace VcAdvisor
                             row.Rank = c.PlanOrder > 0 ? c.PlanOrder : 0;
                             row.Icon = RoleIcon(c.Role);
                             row.IconColor = RoleColor(c.Role);
+                            row.Card = true;   // 圆角卡片底，悬停变亮
                         }
 
                         // 评分理由只给前两张，避免长列表把窗口撑出屏幕
@@ -315,6 +321,21 @@ namespace VcAdvisor
                     R(rows, "⇢ 暂无可出的牌", 1);
                 }
             }
+
+            // —— 案例库提示：相似历史局面的实际表现（自我进化的第一层）——
+            try
+            {
+                var cr = CaseLibrary.Query(s, 40);
+                if (cr.Samples >= 5)
+                {
+                    R(rows, string.Format("案例：相似 {0} 例｜均伤 {1:0}｜均挡 {2:0}｜常见 {3}（{4:0}%）",
+                        cr.Samples, cr.AvgDamageDealt, cr.AvgDamageTaken,
+                        cr.CommonChoice ?? "-", cr.CommonChoiceRate * 100f), 4);
+                }
+                if (CaseLibrary.DriftCount >= 3)
+                    R(rows, string.Format("⚠ 机制偏差 {0} 次：数值可能与历史不一致，建议校准", CaseLibrary.DriftCount), 2);
+            }
+            catch { }
 
             // —— ② 敌方威胁 ——
             if (s.HasEnemy)
@@ -367,34 +388,6 @@ namespace VcAdvisor
                     R(rows, string.Format("… 另有 {0} 种未列出", groups.Count - m), 4);
             }
 
-            // —— ③ 我方增益 / 减益（与游戏左上/右上角图标同源）——
-            R(rows, "", 2);
-            if (s.Stats.Count == 0)
-            {
-                R(rows, "我方属性：无加成", 1);
-            }
-            else
-            {
-                var good = new StringBuilder();
-                var bad = new StringBuilder();
-                foreach (var st in s.Stats)
-                {
-                    string one = string.Format("{0} {1}", st.Name, FormatStat(st));
-                    if (st.Good)
-                    {
-                        if (good.Length > 0) good.Append("   ");
-                        good.Append(one);
-                    }
-                    else
-                    {
-                        if (bad.Length > 0) bad.Append("   ");
-                        bad.Append(one);
-                    }
-                }
-                if (good.Length > 0) R(rows, "增益：" + good, 3);
-                if (bad.Length > 0) R(rows, "减益：" + bad, 4);
-            }
-
             // —— ④ 牌库构成 ——
             R(rows, "", 2);
             R(rows, string.Format("牌库：抽牌 {0} · 弃牌 {1} · 销毁 {2} · 连击 {3}",
@@ -411,6 +404,36 @@ namespace VcAdvisor
                 }
                 if (s.DrawComposition.Count > m)
                     R(rows, string.Format("     … 另有 {0} 类牌", s.DrawComposition.Count - m), 4);
+            }
+
+            // —— ⑤ 奥术 / 属性（对应游戏左上、右上增益）：优先级最低，统一放底部并弱化显示 ——
+            if (s.Arcanas.Count > 0 || s.Stats.Count > 0)
+            {
+                R(rows, "", 2);
+                if (s.Arcanas.Count > 0)
+                    R(rows, "奥术：" + string.Join(" · ", s.Arcanas.ToArray()), 4);
+
+                if (s.Stats.Count > 0)
+                {
+                    var good = new StringBuilder();
+                    var bad = new StringBuilder();
+                    foreach (var st in s.Stats)
+                    {
+                        string one = string.Format("{0} {1}", st.Name, FormatStat(st));
+                        if (st.Good)
+                        {
+                            if (good.Length > 0) good.Append("  ");
+                            good.Append(one);
+                        }
+                        else
+                        {
+                            if (bad.Length > 0) bad.Append("  ");
+                            bad.Append(one);
+                        }
+                    }
+                    if (good.Length > 0) R(rows, "属性：" + good, 4);
+                    if (bad.Length > 0) R(rows, "减益：" + bad, 4);
+                }
             }
 
             return rows;
