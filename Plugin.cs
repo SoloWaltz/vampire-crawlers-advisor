@@ -8,17 +8,20 @@ using UnityEngine;
 
 namespace VcAdvisor
 {
-    [BepInPlugin(AdvisorPlugin.PluginGuid, "Vampire Crawlers 打牌助手", "1.0.0")]
+    [BepInPlugin(AdvisorPlugin.PluginGuid, AdvisorPlugin.PluginName, AdvisorPlugin.PluginVersion)]
     public class AdvisorPlugin : BasePlugin
     {
         public const string PluginGuid = "vampirecrawlers.advisor";
+        public const string PluginName = "Vampire Crawlers 打牌助手";
+        // 版本规则：每次内容新增或修改，次版本号 +0.1（1.0.0 → 1.1.0 → 1.2.0 …）
+        public const string PluginVersion = "1.1.0";
 
         internal static ManualLogSource Logger;
 
         public override void Load()
         {
             Logger = base.Log;
-            Logger.LogInfo("Vampire Crawlers 打牌助手 v1.0.0 已加载（只读模式，不修改任何游戏数值）");
+            Logger.LogInfo(PluginName + " v" + PluginVersion + " 已加载（只读模式，不修改任何游戏数值）");
             AddComponent<AdvisorBehaviour>();
         }
     }
@@ -61,8 +64,9 @@ namespace VcAdvisor
 
         void Update()
         {
-            // 游戏内叠加层仅作后备，F7 切换
+            // 游戏内叠加层仅作后备，F7 切换；F10 切换训练/沙盒模式（沙盒局不计入学习数据）
             try { if (Input.GetKeyDown(KeyCode.F7)) _show = !_show; } catch { }
+            try { if (Input.GetKeyDown(KeyCode.F10)) BattleLog.ToggleSandbox(); } catch { }
 
             if (Time.unscaledTime < _nextScan) return;
             _nextScan = Time.unscaledTime + 0.25f;
@@ -71,6 +75,7 @@ namespace VcAdvisor
             {
                 var snap = GameState.Read();
                 Scoring.Evaluate(snap);
+                BattleLog.Tick(snap);
                 _snap = snap;
                 RebuildLines();
                 _fatal = null;
@@ -100,6 +105,62 @@ namespace VcAdvisor
             return row;
         }
 
+        /// <summary>费用文本：W / 基础→实际 / 普通，并附加回蓝与伤害。</summary>
+        private static string CostText(CardInfo c)
+        {
+            string s;
+            if (c.Wild) s = "W";
+            else if (c.BaseCost >= 0 && c.BaseCost != c.Cost) s = string.Format("费{0}→{1}", c.BaseCost, c.Cost);
+            else s = string.Format("费{0}", c.Cost);
+            if (c.ManaGain > 0) s += string.Format(" 回{0}", c.ManaGain);
+            if (c.DealtDamage > 0) s += string.Format(" 伤{0}", c.DealtDamage);
+            return s;
+        }
+
+        /// <summary>特殊卡标记。</summary>
+        private static string Tags(CardInfo c)
+        {
+            var sb = new StringBuilder();
+            if (c.Wild) sb.Append("  ★万能");
+            if (c.Breakable && c.CrackStage == 1) sb.Append("  ⚠开裂");
+            if (c.Breakable && c.CrackStage == 2) sb.Append("  ✖已碎");
+            return sb.ToString();
+        }
+
+        /// <summary>角色 → 图标编号（与 CompanionWindow.DrawRoleIcon 的 case 对应）。</summary>
+        private static int RoleIcon(CardRole r)
+        {
+            switch (r)
+            {
+                case CardRole.Mana: return 0;
+                case CardRole.Weapon: return 1;
+                case CardRole.Defense: return 2;
+                case CardRole.Economy: return 3;
+                case CardRole.Passive: return 4;
+                case CardRole.Utility: return 5;
+                case CardRole.Character: return 6;
+                case CardRole.Debuff: return 7;
+                default: return -1;
+            }
+        }
+
+        /// <summary>角色图标颜色。</summary>
+        private static int RoleColor(CardRole r)
+        {
+            switch (r)
+            {
+                case CardRole.Mana: return CompanionWindow.Rgb(90, 180, 230);
+                case CardRole.Weapon: return CompanionWindow.Rgb(230, 92, 92);
+                case CardRole.Defense: return CompanionWindow.Rgb(95, 191, 127);
+                case CardRole.Economy: return CompanionWindow.Rgb(224, 179, 79);
+                case CardRole.Passive: return CompanionWindow.Rgb(176, 127, 224);
+                case CardRole.Utility: return CompanionWindow.Rgb(95, 201, 201);
+                case CardRole.Character: return CompanionWindow.Rgb(192, 160, 128);
+                case CardRole.Debuff: return CompanionWindow.Rgb(194, 51, 77);
+                default: return CompanionWindow.Rgb(150, 140, 130);
+            }
+        }
+
         /// <summary>把当前局势推送给独立的置顶伴侣窗口（仅在内容变化时重绘）。</summary>
         private void PushCompanion()
         {
@@ -115,7 +176,9 @@ namespace VcAdvisor
             var sig = new StringBuilder();
             sig.Append(adv ? '1' : '0').Append('|');
             foreach (var r in rows)
-                sig.Append(r.Kind).Append(':').Append(r.Indent).Append(':').Append(r.Text).Append('\n');
+                sig.Append(r.Kind).Append(':').Append(r.Indent).Append(':').Append(r.Rank).Append(':')
+                   .Append(r.Icon).Append(':').Append(r.IconColor).Append(':').Append(r.Hero ? '1' : '0').Append(':')
+                   .Append(r.Text).Append('\n');
             string key = sig.ToString();
 
             if (key == _lastContentSig && adv == _lastAdv) return;
@@ -156,6 +219,13 @@ namespace VcAdvisor
             if (line2.Length == 0) line2.Append("状态读取中…");
             Add(rows, line2.ToString(), hpLow ? 2 : 1);
 
+            // 对局记录状态：训练模式写入学习数据，沙盒模式只存档（F10 切换）
+            if (s.InEncounter && (BattleLog.Records > 0 || BattleLog.SandboxMode))
+            {
+                R(rows, string.Format("记录 {0} 条 ｜ {1}（F10 切换）",
+                    BattleLog.Records, BattleLog.SandboxMode ? "沙盒模式·不计入学习" : "训练模式"), 4);
+            }
+
             // —— ① 出牌顺序（核心）——
             R(rows, "", 2);
             if (s.Hand.Count == 0)
@@ -186,25 +256,38 @@ namespace VcAdvisor
                     for (int i = 0; i < n; i++)
                     {
                         var c = s.Hand[i];
-                        string mark = c.PlanOrder > 0 ? c.PlanOrder.ToString() : "·";
-                        string costTxt = c.ManaGain > 0
-                            ? string.Format("费{0} 回{1}", c.Cost, c.ManaGain)
-                            : string.Format("费{0}", c.Cost);
+                        string costTxt = CostText(c);
+                        string tags = Tags(c);
 
-                        var sb1 = new StringBuilder();
-                        sb1.Append(mark).Append(". ").Append(c.Name)
-                           .Append("   [").Append(CardDb.RoleName(c.Role)).Append(" · ").Append(costTxt).Append(']')
-                           .Append("   ").Append(c.Score);
-                        if (c.Wild) sb1.Append("  ★万能");
-                        if (c.Breakable && c.CrackStage == 1) sb1.Append("  ⚠开裂");
-                        if (c.Breakable && c.CrackStage == 2) sb1.Append("  ✖已碎");
-
-                        Add(rows, sb1.ToString(), i == 0 && c.PlanOrder > 0 ? 3 : 2);
-
-                        if (adv && c.Reasons.Count > 0)
+                        if (c.PlanOrder == 1)
                         {
-                            var rr = Add(rows, "     · " + string.Join("；", c.Reasons.ToArray()), 4);
-                            rr.Indent = 6;
+                            // 首推：21px 大字 + 整行高亮底 + 金色箭头（不再是“加粗小字”）
+                            var hr = Add(rows, c.Name + tags, 6);
+                            hr.Hero = true;
+
+                            var dr = Add(rows, string.Format("{0}   分值 {1}", costTxt, c.Score), 3);
+                            dr.Indent = 22;
+                        }
+                        else
+                        {
+                            var sb1 = new StringBuilder();
+                            sb1.Append(c.Name)
+                               .Append("   [").Append(CardDb.RoleName(c.Role)).Append(" · ")
+                               .Append(costTxt).Append(']')
+                               .Append("   ").Append(c.Score)
+                               .Append(tags);
+
+                            var row = Add(rows, sb1.ToString(), 2);
+                            row.Rank = c.PlanOrder > 0 ? c.PlanOrder : 0;
+                            row.Icon = RoleIcon(c.Role);
+                            row.IconColor = RoleColor(c.Role);
+                        }
+
+                        // 评分理由只给前两张，避免长列表把窗口撑出屏幕
+                        if (adv && c.PlanOrder >= 1 && c.PlanOrder <= 2 && c.Reasons.Count > 0)
+                        {
+                            var rr = Add(rows, "· " + string.Join("；", c.Reasons.ToArray()), 4);
+                            rr.Indent = 8;
                         }
                     }
                     if (s.Hand.Count > n)
@@ -256,7 +339,7 @@ namespace VcAdvisor
                 foreach (var g in groups) total += g.Count;
                 R(rows, string.Format("共 {0} 只（{1} 种）", total, groups.Count), 1);
 
-                int m = Math.Min(adv ? 8 : 4, groups.Count);
+                int m = Math.Min(adv ? 6 : 4, groups.Count);
                 for (int i = 0; i < m; i++)
                 {
                     var g = groups[i];
@@ -319,7 +402,7 @@ namespace VcAdvisor
 
             if (s.DrawComposition.Count > 0)
             {
-                int m = Math.Min(adv ? 10 : 5, s.DrawComposition.Count);
+                int m = Math.Min(adv ? 6 : 4, s.DrawComposition.Count);
                 for (int i = 0; i < m; i++)
                 {
                     var kv = s.DrawComposition[i];
@@ -483,7 +566,7 @@ namespace VcAdvisor
             try
             {
                 var sig = new StringBuilder();
-                sig.Append(s.Turn).Append('|').Append(s.Mana.ToString("0.##")).Append('|').Append(s.ReverseCombo ? 'R' : 'F').Append('|');
+                sig.Append(s.TurnEffective).Append('|').Append(s.Mana.ToString("0.##")).Append('|').Append(s.ReverseCombo ? 'R' : 'F').Append('|');
                 foreach (var c in s.Hand) sig.Append(c.Key).Append(':').Append(c.Cost).Append(':').Append(c.InCombo ? '1' : '0').Append(':').Append(c.PlanOrder).Append(',');
                 string key = sig.ToString();
                 if (key == _lastPlanSig) return;
@@ -540,7 +623,7 @@ namespace VcAdvisor
             try
             {
                 var sig = new StringBuilder();
-                sig.Append(s.Turn).Append('|');
+                sig.Append(s.TurnEffective).Append('|');
                 foreach (var e in s.Enemies)
                     sig.Append(e.Name).Append(':').Append(e.Hp.ToString("0")).Append(':')
                        .Append(e.IncomingDamage).Append(':').Append(string.Join(",", e.Intents.ToArray())).Append(';');
@@ -550,7 +633,7 @@ namespace VcAdvisor
                 _lastEnemySig = key;
 
                 var sb = new StringBuilder();
-                sb.Append("[敌情] 回合 ").Append(s.Turn)
+                sb.Append("[敌情] 回合 ").Append(s.TurnDisplay)
                   .Append(" 敌人 ").Append(s.Enemies.Count).Append(" 只")
                   .Append(" 本回合预计受伤 ").Append(s.IncomingDamage).Append("｜");
                 foreach (var e in s.Enemies)
