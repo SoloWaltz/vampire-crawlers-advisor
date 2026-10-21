@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using BepInEx;
 
 namespace VcAdvisor
 {
@@ -20,11 +22,14 @@ namespace VcAdvisor
             public string Text = "";
             public int Kind;          // 0 标题 1 副标题 2 普通 3 高亮 4 提示 6 首推大字
             public int Indent;        // 文本左缩进（像素）
-            public int Icon = -1;     // 左侧图标（角色）；-1 = 不画
+            public int Icon = -1;     // 左侧矢量图标（角色）；-1 = 不画（有 IconKey 时仍可画图片）
             public int IconColor = -1;// 图标颜色；-1 = 跟随文本颜色
+            public string IconKey;    // 图标库键（CardInfo.Key）
+            public string IconName;   // 中文卡名（优先匹配图标库）
             public int Rank;          // >0 时在图标位置画序号徽章
             public bool Hero;         // 首推：大字号 + 整行高亮底
             public bool Card;         // 圆角卡片底（普通出牌条目）
+            public string Detail;     // 鼠标悬停时显示的浮层说明；空 = 不显示
             public int Tab = -1;      // -1 = 所有标签页可见；0 出牌 1 敌情 2 牌库 3 资料
         }
 
@@ -61,6 +66,9 @@ namespace VcAdvisor
         private static bool _hiddenByMinimize;       // 因游戏窗口最小化而临时隐藏
         private static int _width = 372;
         private static int _height = 200;
+        // 记住上次的位置/尺寸/标签页/模式（跨启动保持）
+        private static int _savedX = int.MinValue, _savedY = int.MinValue;
+        private static bool _hasSavedPos;
 
         // —— GDI 资源缓存（避免每次重绘都新建/销毁画刷，拖动时明显更顺）——
         private static readonly Dictionary<int, IntPtr> _brushes = new Dictionary<int, IntPtr>();
@@ -95,6 +103,7 @@ namespace VcAdvisor
         // —— 鼠标悬停（按钮高亮）——
         private static int _hotBtn;              // 0 无 / 1 进阶 / 2 收起 / 3 关闭
         private static bool _trackingMouse;
+        private static readonly HashSet<string> _iconMissLogged = new HashSet<string>(StringComparer.Ordinal);
         private const uint TME_LEAVE = 0x00000002;
 
         private const string CLASS_NAME = "VcAdvisorCompanionWnd";
@@ -106,6 +115,7 @@ namespace VcAdvisor
         private const int WM_MOUSEACTIVATE = 0x0021;
         private const int WM_SETCURSOR = 0x0020;
         private const int WM_MOUSEWHEEL = 0x020A;
+        private const int WM_GETMINMAXINFO = 0x0024;
         private const int WM_NCHITTEST = 0x0084;
         private const int WM_LBUTTONDOWN = 0x0201;
         private const int WM_MOUSEMOVE = 0x0200;
@@ -196,6 +206,16 @@ namespace VcAdvisor
 
         [StructLayout(LayoutKind.Sequential)]
         private struct POINT { public int x, y; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MINMAXINFO
+        {
+            public POINT ptReserved;
+            public POINT ptMaxSize;
+            public POINT ptMaxPosition;
+            public POINT ptMinTrackSize;
+            public POINT ptMaxTrackSize;
+        }
 
         [StructLayout(LayoutKind.Sequential)]
         private struct MSG
@@ -470,10 +490,90 @@ namespace VcAdvisor
 
         #endregion
 
+        #region 窗口状态持久化
+
+        /// <summary>布局状态文件：与对局日志放在同一目录，便于查找与清理。</summary>
+        private static string StatePath()
+        {
+            string root = null;
+            try { root = Paths.BepInExRootPath; } catch { }
+            if (string.IsNullOrEmpty(root)) root = AppDomain.CurrentDomain.BaseDirectory;
+            try { Directory.CreateDirectory(Path.Combine(root, "VcAdvisorLogs")); } catch { }
+            return Path.Combine(root, "VcAdvisorLogs", "window-state.txt");
+        }
+
+        private static void LoadState()
+        {
+            try
+            {
+                string p = StatePath();
+                if (!File.Exists(p)) return;
+                foreach (var line in File.ReadAllLines(p))
+                {
+                    int i = line.IndexOf('=');
+                    if (i <= 0) continue;
+                    string k = line.Substring(0, i).Trim();
+                    int n;
+                    if (!int.TryParse(line.Substring(i + 1).Trim(), out n)) continue;
+                    switch (k)
+                    {
+                        case "w": if (n >= 340) _width = n; break;
+                        case "h": if (n >= 180) _height = n; break;
+                        case "x": _savedX = n; break;
+                        case "y": _savedY = n; break;
+                        case "tab": if (n >= 0 && n < 4) _tab = n; break;
+                        case "adv": _advanced = n != 0; break;
+                        case "collapsed": _collapsed = n != 0; break;
+                        case "moved": _userMoved = n != 0; break;
+                    }
+                }
+                _hasSavedPos = _userMoved && _savedX != int.MinValue && _savedY != int.MinValue;
+            }
+            catch { }
+        }
+
+        private static void SaveState()
+        {
+            try
+            {
+                int x = _savedX, y = _savedY, w = _width, h = _height;
+                if (_hwnd != IntPtr.Zero)
+                {
+                    RECT wr;
+                    if (GetWindowRect(_hwnd, out wr))
+                    {
+                        x = wr.left; y = wr.top;
+                        w = wr.right - wr.left; h = wr.bottom - wr.top;
+                    }
+                }
+                if (!_userMoved) { x = _savedX; y = _savedY; }
+                if (w < 340) w = 340;
+                if (h < 180) h = 180;
+
+                var sb = new StringBuilder();
+                sb.AppendLine("w=" + w);
+                sb.AppendLine("h=" + h);
+                if (x != int.MinValue && y != int.MinValue)
+                {
+                    sb.AppendLine("x=" + x);
+                    sb.AppendLine("y=" + y);
+                }
+                sb.AppendLine("tab=" + _tab);
+                sb.AppendLine("adv=" + (_advanced ? 1 : 0));
+                sb.AppendLine("collapsed=" + (_collapsed ? 1 : 0));
+                sb.AppendLine("moved=" + (_userMoved ? 1 : 0));
+                File.WriteAllText(StatePath(), sb.ToString(), new UTF8Encoding(false));
+            }
+            catch { }
+        }
+
+        #endregion
+
         private static void ThreadMain()
         {
             try
             {
+                LoadState();     // 恢复上次的尺寸/位置/标签页/模式
                 _wndProc = WndProc;
                 _enumProc = EnumProc;
                 // 显式指定光标：否则窗口类没有光标，WM_SETCURSOR 默认不处理，
@@ -502,8 +602,10 @@ namespace VcAdvisor
 
                 // 样式：无边框弹出窗 + 置顶 + 不在任务栏 + 不抢焦点
                 int exStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+                int initX = _hasSavedPos ? _savedX : 100;
+                int initY = _hasSavedPos ? _savedY : 100;
                 _hwnd = CreateWindowExW(exStyle, CLASS_NAME, "打牌助手",
-                    WS_POPUP, 100, 100, _width, _height,
+                    WS_POPUP, initX, initY, _width, _height,
                     IntPtr.Zero, IntPtr.Zero, wc.hInstance, IntPtr.Zero);
                 if (_hwnd == IntPtr.Zero)
                 {
@@ -808,7 +910,7 @@ namespace VcAdvisor
                 RECT cr;
                 GetClientRect(hWnd, out cr);
                 int cw = cr.right - cr.left;
-                if (cw < 200) cw = 200;
+                if (cw < 340) cw = 340;
                 _width = cw;
 
                 lock (_lock)
@@ -1057,10 +1159,18 @@ namespace VcAdvisor
             RECT tb = new RECT { left = 1, top = 1, right = cw - 1, bottom = 1 + TITLE_H };
             FillR(dc, tb, C_TITLEBAR);
 
-            // 标题（前置金色菱形徽记），与右侧按钮在同一垂直中心
-            DrawRoleIcon(dc, 4, PAD, 1 + (TITLE_H - 10) / 2, 10, C_GOLD);
+            // 标题（前置游戏素材卡背图标），与右侧按钮在同一垂直中心
+            int titleX = PAD + 16;
+            if (IconDb.DrawCardBack(dc, PAD, 1 + (TITLE_H - 18) / 2, 18))
+            {
+                titleX = PAD + 24;
+            }
+            else
+            {
+                DrawRoleIcon(dc, 4, PAD, 1 + (TITLE_H - 10) / 2, 10, C_GOLD);
+            }
             DrawTVC(dc, _paintTitle + (_collapsed ? "  （已收起）" : ""),
-                PAD + 16, 1, cw - PAD * 3 - BTN_W * 2 - CLOSE_W - 28, TITLE_H,
+                titleX, 1, cw - PAD * 3 - BTN_W * 2 - CLOSE_W - 28, TITLE_H,
                 _fTitle, C_TEXT_TITLE);
 
             // 标题栏按钮（带悬停反馈）
@@ -1101,10 +1211,8 @@ namespace VcAdvisor
 
                     if (row.Hero)
                     {
-                        // 首推：圆角高亮卡片 + 金色大箭头 + 21px 大字
+                        // 首推：圆角高亮卡片 + 21px 大字；只保留卡牌自身图标，避免同一行出现两枚图标
                         FillRound(dc, band, C_CARD_HERO, 12);
-                        DrawArrow(dc, baseX, ry + rh / 2 - 6, 12, C_GOLD);
-                        textX += 20;
                         textY += 8;
                         textH -= 8;
                     }
@@ -1126,11 +1234,32 @@ namespace VcAdvisor
                             row.Rank == 1 ? C_GOLD : C_TEXT_SUB);
                         textX += 22;
                     }
-                    if (row.Icon >= 0)
+                    if (row.Icon >= 0 || !string.IsNullOrEmpty(row.IconKey))
                     {
-                        DrawRoleIcon(dc, row.Icon, textX, ry + 4, 14,
-                            row.IconColor >= 0 ? row.IconColor : C_TEXT_SUB);
-                        textX += 18;
+                        // 优先用 Wiki 素材图；首推行的图标稍大一些
+                        int iconSize = row.Hero ? 20 : 16;
+                        int iconY = row.Hero ? ry + (rh - iconSize) / 2 : ry + 3;
+                        bool drew = false;
+                        if (!string.IsNullOrEmpty(row.IconKey) || !string.IsNullOrEmpty(row.IconName))
+                            drew = IconDb.Draw(dc, row.IconKey, row.IconName, textX, iconY, iconSize);
+                        if (!drew)
+                        {
+                            // 没有对应素材时用卡背占位，避免再出现和像素图标风格不一致的矢量图标
+                            bool generic = !string.IsNullOrEmpty(row.IconKey) &&
+                                           IconDb.DrawCardBack(dc, textX, ry + 3, 16);
+                            if (generic)
+                            {
+                                string mk = (row.IconKey ?? "") + "|" + (row.IconName ?? "");
+                                if (_iconMissLogged.Add(mk))
+                                    Log("[图标] 未匹配素材，使用卡背占位：" + (row.IconName ?? "") + " (" + (row.IconKey ?? "") + ")");
+                            }
+                            else if (row.Icon >= 0)
+                            {
+                                DrawRoleIcon(dc, row.Icon, textX, ry + 4, 14,
+                                    row.IconColor >= 0 ? row.IconColor : C_TEXT_SUB);
+                            }
+                        }
+                        textX += row.Hero ? 24 : 18;
                     }
 
                     DrawT(dc, row.Text, textX, textY, innerW - (textX - PAD), textH,
@@ -1149,6 +1278,34 @@ namespace VcAdvisor
                     int pos = _maxScroll > 0 ? travel * _scrollY / _maxScroll : 0;
                     RECT thumb = new RECT { left = track.left, top = track.top + pos, right = track.right, bottom = track.top + pos + thumbH };
                     FillRound(dc, thumb, C_SCROLL, 4);
+                }
+
+                // —— 悬停浮层：显示该行的详细说明（不参与排版，纯覆盖绘制）——
+                if (_hoverRow >= 0 && _hoverRow < _shown.Count && _hoverRow < _rowTop.Count)
+                {
+                    string detail = _shown[_hoverRow].Detail;
+                    if (!string.IsNullOrEmpty(detail))
+                    {
+                        int maxW = cw - PAD * 2 - 10;
+                        if (maxW > 440) maxW = 440;
+                        if (maxW < 160) maxW = 160;
+                        int th = Measure(dc, detail, maxW - 20, _fRow) + 16;
+                        int tx = PAD;
+                        int ty = _rowTop[_hoverRow] + _rowH[_hoverRow] + 4;
+                        int topLimit = 1 + TITLE_H + TAB_H;
+                        // 下方放不下就显示在行上方，并限制在内容区内
+                        if (ty + th > ch - 6) ty = _rowTop[_hoverRow] - th - 4;
+                        if (ty < topLimit) ty = topLimit;
+                        if (ty + th > ch - 4) th = ch - 4 - ty;
+                        if (th > 24)
+                        {
+                            RECT box = new RECT { left = tx, top = ty, right = tx + maxW, bottom = ty + th };
+                            FillRound(dc, box, C_BORDER, 10);
+                            RECT inner = new RECT { left = tx + 1, top = ty + 1, right = tx + maxW - 1, bottom = ty + th - 1 };
+                            FillRound(dc, inner, C_CARD_HOVER, 9);
+                            DrawT(dc, detail, tx + 10, ty + 8, maxW - 20, th - 16, _fRow, C_TEXT);
+                        }
+                    }
                 }
 
                 try { RestoreDC(dc, saved); } catch { }
@@ -1436,6 +1593,20 @@ namespace VcAdvisor
                         RenderTo(wParam, hWnd);
                         return IntPtr.Zero;
 
+                    case WM_GETMINMAXINFO:
+                        {
+                            // 最小宽度 340：低于这个宽度时四个标签与长句会被右边缘裁掉
+                            try
+                            {
+                                var mmi = (MINMAXINFO)Marshal.PtrToStructure(lParam, typeof(MINMAXINFO));
+                                mmi.ptMinTrackSize.x = 340;
+                                mmi.ptMinTrackSize.y = 180;
+                                Marshal.StructureToPtr(mmi, lParam, false);
+                            }
+                            catch { }
+                            return IntPtr.Zero;
+                        }
+
                     case WM_CONTENT:
                         // 拖动中先攒着，等 WM_EXITSIZEMOVE 再排版重绘
                         if (_inMove) return IntPtr.Zero;
@@ -1483,6 +1654,7 @@ namespace VcAdvisor
                                         Layout(hWnd);
                                         InvalidateRect(hWnd, IntPtr.Zero, false);
                                         Log("切换标签页 → " + TAB_NAMES[i]);
+                                        SaveState();
                                     }
                                     return IntPtr.Zero;
                                 }
@@ -1501,6 +1673,7 @@ namespace VcAdvisor
                                 Layout(hWnd);
                                 InvalidateRect(hWnd, IntPtr.Zero, false);
                                 Log(_collapsed ? "点击 收起：面板已收起" : "点击 展开：面板已展开");
+                                SaveState();
                                 return IntPtr.Zero;
                             }
                             if (PtIn(_btnAdv, p))
@@ -1508,6 +1681,7 @@ namespace VcAdvisor
                                 _advanced = !_advanced;
                                 InvalidateRect(hWnd, IntPtr.Zero, false);
                                 Log(_advanced ? "点击 简化/进阶：已切换为进阶" : "点击 简化/进阶：已切换为简化");
+                                SaveState();
                                 return IntPtr.Zero;
                             }
                             return IntPtr.Zero;
@@ -1585,6 +1759,7 @@ namespace VcAdvisor
                     case WM_EXITSIZEMOVE:
                         _inMove = false;
                         Layout(hWnd);
+                        SaveState();
                         InvalidateRect(hWnd, IntPtr.Zero, false);
                         return IntPtr.Zero;
 

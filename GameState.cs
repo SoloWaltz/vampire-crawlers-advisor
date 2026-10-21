@@ -24,6 +24,7 @@ namespace VcAdvisor
         public bool IsWeapon;
         public CardRole Role;         // 归一化后的打法分类
         public int ManaGain;          // 打出后回复的法力（0 = 无回蓝）
+        public int ArmorGain = -1;    // 打出后获得的护甲（取自 ArmorEffect；-1 = 非防御牌/未取到）
         public bool Playable;         // 当前法力是否够
         public bool InCombo;          // 游戏判定：打出它能否接上当前连击（PlayerModel.IsCardInCombo）
         public int PlanOrder;         // 本回合计划中的出牌次序（0 = 不在计划内）
@@ -93,6 +94,16 @@ namespace VcAdvisor
         public float PlanManaUsed;    // 计划消耗的法力（毛消耗）
         public float PlanManaGain;    // 计划中法力牌回复的法力
         public float PlanRemaining;   // 计划执行后剩余法力（含回蓝）
+
+        // —— 本回合计划的结果预演（乐观估算，用于界面提示）——
+        public int PlanDamage;        // 计划内卡牌的运行时伤害合计
+        public int PlanArmor;         // 计划内卡牌获得的护甲合计
+        public int PlanKills;         // 按敌方血量从低到高估算的最多击杀数
+        public float PlanEnemyLeft;   // 敌方剩余总血（乐观，不扣护甲）
+        public bool PlanCanClear;     // 估算可清场
+        public float PlanHpAfter;     // 执行计划后的预计剩余生命（含护甲）
+        public bool PlanHpKnown;      // 生命数据可用
+        public bool PlanRisky;        // 执行后生命 ≤ 0
 
         public float Hp = -1f;
         public float HpPeak;
@@ -914,6 +925,7 @@ namespace VcAdvisor
 
                 try { ci.ManaGain = ReadManaGain(cm, player, cfg, ci.Cost, false); } catch { }
                 try { ci.DealtDamage = ReadDamage(player, cm, cfg, combo, false); } catch { }
+                try { ci.ArmorGain = ReadArmor(cm, player, cfg, false); } catch { }
             }
             catch { }
             return ci;
@@ -930,6 +942,7 @@ namespace VcAdvisor
             try { cfg = cm.CardConfig; } catch { }
             try { ci.ManaGain = ReadManaGain(cm, player, cfg, ci.Cost, inCombo); } catch { }
             try { ci.DealtDamage = ReadDamage(player, cm, cfg, combo, inCombo); } catch { }
+            try { ci.ArmorGain = ReadArmor(cm, player, cfg, inCombo); } catch { }
         }
 
         /// <summary>
@@ -969,6 +982,38 @@ namespace VcAdvisor
             }
             catch { }
             return found ? (int)Math.Round(total) : -1;
+        }
+
+        /// <summary>
+        /// 读取「这张牌此刻实际会获得多少护甲」。
+        /// 取 ArmorEffect 的运行时数值（含连击倍率），用于本回合生存预演。
+        /// 返回 -1 表示不是护甲牌或未取到。
+        /// </summary>
+        private static int ReadArmor(CardModel cm, PlayerModel player, GameCardConfig cfg, bool inCombo)
+        {
+            if (cfg == null) return -1;
+            int total = 0;
+            bool found = false;
+            try
+            {
+                var arr = cfg.onPlayEffect;
+                if (arr == null) return -1;
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    var e = arr[i];
+                    if (e == null) continue;
+                    var ae = e.TryCast<ArmorEffect>();
+                    if (ae == null) continue;
+                    found = true;
+                    int v = 0;
+                    bool ok = false;
+                    try { v = ae.GetModifiedEffectAmount(cm, player, inCombo); ok = true; } catch { }
+                    if (!ok) { try { v = ae.GetBaseEffectAmount(); } catch { } }
+                    if (v > 0) total += v;
+                }
+            }
+            catch { }
+            return found ? total : -1;
         }
 
         /// <summary>

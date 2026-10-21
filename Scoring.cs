@@ -29,6 +29,7 @@ namespace VcAdvisor
                 s.PlanManaUsed = 0f;
                 s.PlanManaGain = 0f;
                 s.PlanRemaining = 0f;
+                ResetPlanPreview(s);
                 return;
             }
 
@@ -247,6 +248,7 @@ namespace VcAdvisor
             s.PlanManaUsed = 0f;
             s.PlanManaGain = 0f;
             s.PlanRemaining = 0f;
+            ResetPlanPreview(s);
 
             if (!manaKnown || s.Hand.Count == 0) return; // 法力未知时不编排顺序
 
@@ -266,6 +268,60 @@ namespace VcAdvisor
             s.PlanManaUsed = used;
             s.PlanManaGain = gained;
             s.PlanRemaining = Math.Max(0f, mana + gained - used);
+
+            // —— 结果预演：把整段计划打完后的大致结果算出来 ——
+            int dmg = 0, armor = 0;
+            for (int k = 0; k < order.Count; k++)
+            {
+                var c = order[k];
+                if (c.DealtDamage > 0) dmg += c.DealtDamage;
+                if (c.ArmorGain > 0) armor += c.ArmorGain;
+            }
+            s.PlanDamage = dmg;
+            s.PlanArmor = armor;
+
+            float enemyHp = 0f;
+            var alive = new List<float>();
+            for (int i = 0; i < s.Enemies.Count; i++)
+            {
+                var e = s.Enemies[i];
+                if (e == null || e.Dead || e.Hp <= 0f) continue;
+                enemyHp += e.Hp;
+                alive.Add(e.Hp);
+            }
+            // 击杀数按「敌方血量从低到高、伤害不溢出」的乐观顺序估算
+            alive.Sort();
+            float rest = dmg;
+            int kills = 0;
+            for (int i = 0; i < alive.Count; i++)
+            {
+                if (rest + 0.001f >= alive[i]) { rest -= alive[i]; kills++; }
+                else break;
+            }
+            s.PlanKills = kills;
+            s.PlanEnemyLeft = Math.Max(0f, enemyHp - dmg);
+            s.PlanCanClear = alive.Count > 0 && dmg + 0.001f >= enemyHp;
+
+            if (s.Hp > 0f)
+            {
+                float after = s.Hp + Math.Max(0f, s.Armor) + armor - s.IncomingDamage;
+                s.PlanHpAfter = after;
+                s.PlanHpKnown = true;
+                s.PlanRisky = after <= 0f;
+            }
+        }
+
+        /// <summary>清空结果预演字段（无手牌 / 无法编排计划时）。</summary>
+        private static void ResetPlanPreview(Snapshot s)
+        {
+            s.PlanDamage = 0;
+            s.PlanArmor = 0;
+            s.PlanKills = 0;
+            s.PlanEnemyLeft = 0f;
+            s.PlanCanClear = false;
+            s.PlanHpAfter = 0f;
+            s.PlanHpKnown = false;
+            s.PlanRisky = false;
         }
 
         /// <summary>连击方向：正向每张 +1 费，逆向（ReverseCombo）每张 -1 费。</summary>

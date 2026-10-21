@@ -14,7 +14,7 @@ namespace VcAdvisor
         public const string PluginGuid = "vampirecrawlers.advisor";
         public const string PluginName = "Vampire Crawlers 打牌助手";
         // 版本规则：每次内容新增或修改，次版本号 +0.1（1.0.0 → 1.1.0 → 1.2.0 …）
-        public const string PluginVersion = "1.6.1";
+        public const string PluginVersion = "1.8.2";
 
         internal static ManualLogSource Logger;
 
@@ -123,6 +123,7 @@ namespace VcAdvisor
             else s = string.Format("费{0}", c.Cost);
             if (c.ManaGain > 0) s += string.Format(" 回{0}", c.ManaGain);
             if (c.DealtDamage > 0) s += string.Format(" 伤{0}", c.DealtDamage);
+            if (c.ArmorGain > 0) s += string.Format(" 甲{0}", c.ArmorGain);
             return s;
         }
 
@@ -134,6 +135,38 @@ namespace VcAdvisor
             if (c.Breakable && c.CrackStage == 1) sb.Append("  ⚠开裂");
             if (c.Breakable && c.CrackStage == 2) sb.Append("  ✖已碎");
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// 悬停提示的正文：卡牌说明 + 实际数值 + 连击状态 + 评分理由。
+        /// 仅在鼠标悬停在该行时由伴侣窗口以浮层显示。
+        /// </summary>
+        private static string CardDetail(CardInfo c, Snapshot s)
+        {
+            if (c == null) return null;
+            var d = new StringBuilder();
+            d.Append(c.Name).Append("  [").Append(CardDb.RoleName(c.Role)).Append(']').Append('\n');
+            if (c.BaseCost >= 0 && c.BaseCost != c.Cost)
+                d.Append("费用 ").Append(c.BaseCost).Append(" → ").Append(c.Cost);
+            else
+                d.Append("费用 ").Append(c.Cost);
+            if (c.ManaGain > 0) d.Append("  回蓝 +").Append(c.ManaGain);
+            if (c.DealtDamage > 0) d.Append("  伤害 ").Append(c.DealtDamage);
+            if (c.ArmorGain > 0) d.Append("  护甲 +").Append(c.ArmorGain);
+            if (c.Wild) d.Append("  W万能");
+
+            if (c.InCombo) d.Append("\n连击：可接上当前连击");
+            else if (s != null && s.NextComboCost >= 0) d.Append("\n连击：当前阶梯需 ").Append(s.NextComboCost).Append(" 费");
+
+            string desc = WikiData.CardDesc(c.Name);
+            if (!string.IsNullOrEmpty(desc)) d.Append('\n').Append(desc);
+
+            if (c.Reasons.Count > 0)
+                d.Append("\n· ").Append(string.Join("；", c.Reasons.ToArray()));
+
+            string t = d.ToString();
+            if (t.Length > 300) t = t.Substring(0, 300) + "…";
+            return t;
         }
 
         /// <summary>角色 → 图标编号（与 CompanionWindow.DrawRoleIcon 的 case 对应）。</summary>
@@ -285,6 +318,9 @@ namespace VcAdvisor
                             // 首推：21px 大字 + 整行高亮底 + 金色箭头（不再是“加粗小字”）
                             var hr = Add(rows, c.Name + tags, 6);
                             hr.Hero = true;
+                            hr.Detail = CardDetail(c, s);
+                            hr.IconKey = c.Key;
+                            hr.IconName = c.Name;
 
                             var dr = Add(rows, string.Format("{0}   分值 {1}", costTxt, c.Score), 3);
                             dr.Indent = 22;
@@ -315,6 +351,9 @@ namespace VcAdvisor
                             row.Icon = RoleIcon(c.Role);
                             row.IconColor = RoleColor(c.Role);
                             row.Card = true;   // 圆角卡片底，悬停变亮
+                            row.Detail = CardDetail(c, s);
+                            row.IconKey = c.Key;
+                            row.IconName = c.Name;
                         }
 
                         // 评分理由只给前两张，避免长列表把窗口撑出屏幕
@@ -330,6 +369,23 @@ namespace VcAdvisor
                     string tail = s.PlanManaGain > 0 ? string.Format("（含回蓝 +{0:0.##}）", s.PlanManaGain) : "";
                     R(rows, string.Format("⇢ 消耗法力 {0:0.##}，剩余 {1:0.##}{2}",
                         s.PlanManaUsed, s.PlanRemaining, tail), 1);
+
+                    // —— 结果预演：这套牌全部打完后的大致结果（乐观估算）——
+                    if (s.HasEnemy)
+                    {
+                        var pv = new StringBuilder("预演：伤害 ").Append(s.PlanDamage);
+                        if (s.PlanKills > 0) pv.Append(" · 最多击杀 ").Append(s.PlanKills).Append(" 只");
+                        pv.Append(" · 敌方剩 ").Append(s.PlanEnemyLeft.ToString("0"));
+                        R(rows, pv.ToString(), 2);
+
+                        var sv = new StringBuilder();
+                        if (s.PlanArmor > 0) sv.Append("护甲 +").Append(s.PlanArmor).Append("   ");
+                        if (s.PlanHpKnown) sv.Append("预计剩余生命 ").Append(s.PlanHpAfter.ToString("0"));
+                        if (sv.Length > 0) R(rows, "　　　" + sv, 4);
+
+                        if (s.PlanCanClear) R(rows, "★ 本回合可清场", 3);
+                        else if (s.PlanRisky) R(rows, "⚠ 按此计划有死亡风险", 3);
+                    }
                 }
                 // 打不出任何牌时不再罗列负分卡表，只给出状态说明（避免出现无意义的“推荐”）
                 else if (s.IsTurnEnding)
@@ -714,6 +770,11 @@ namespace VcAdvisor
                   .Append(" 毛耗 ").Append(s.PlanManaUsed.ToString("0.##"))
                   .Append(" 回蓝 ").Append(s.PlanManaGain.ToString("0.##"))
                   .Append(" 剩余 ").Append(s.PlanRemaining.ToString("0.##"))
+                  .Append(" ｜预演：伤 ").Append(s.PlanDamage)
+                  .Append(" 甲 ").Append(s.PlanArmor)
+                  .Append(" 击杀 ").Append(s.PlanKills)
+                  .Append(" 敌剩 ").Append(s.PlanEnemyLeft.ToString("0"))
+                  .Append(" 我剩 ").Append(s.PlanHpKnown ? s.PlanHpAfter.ToString("0") : "?")
                   .Append(" ｜顺序：");
                 bool first = true;
                 foreach (var c in s.Hand)
