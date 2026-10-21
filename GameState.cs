@@ -112,6 +112,9 @@ namespace VcAdvisor
         public List<StatInfo> Stats = new List<StatInfo>();   // 我方增益/减益
         public List<string> Heroes = new List<string>();      // 英雄组合（战斗界面左中）
         public List<string> Arcanas = new List<string>();     // 已激活的奥术/增益（画面左上/右上）
+        public List<string> HeroSkills = new List<string>();  // 英雄技能（来自内置 Wiki）
+        public List<string> EvoReady = new List<string>();    // 手牌已集齐的进化配方
+        public List<string> EvoNear = new List<string>();     // 手牌只差一部分的进化配方
 
         // —— 对局记录用：游戏自己的出牌历史（权威来源，比手牌差分可靠）——
         public List<string> TurnPlayed = new List<string>();      // 本回合已打出的卡牌 AssetId（按顺序）
@@ -303,6 +306,7 @@ namespace VcAdvisor
                 ReadStats(s, player);
                 ReadHeroes(s, player);
                 ReadArcanas(s, player);
+                ReadWikiInfo(s);
                 ResolveTurn(s, nativeTurnOk);
 
                 if (!s.InEncounter && s.Hand.Count == 0)
@@ -452,6 +456,29 @@ namespace VcAdvisor
                 AddArcana(s, arc, arc._infiniteCombo);
                 AddArcana(s, arc, arc._ebbAndCombo);
                 AddArcana(s, arc, arc._chairGame);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// 把内置 Wiki 资料与当前局面结合：
+        /// 英雄技能文本、手牌中已集齐/接近集齐的进化配方。
+        /// 只做信息补全与特征记录，不直接改写评分。
+        /// </summary>
+        private static void ReadWikiInfo(Snapshot s)
+        {
+            try
+            {
+                WikiData.EnsureLoaded();
+
+                for (int i = 0; i < s.Heroes.Count; i++)
+                {
+                    var c = WikiData.Character(s.Heroes[i]);
+                    if (c != null && !string.IsNullOrEmpty(c.Skill))
+                        s.HeroSkills.Add(s.Heroes[i] + "：" + c.Skill);
+                }
+
+                WikiData.RecipesInHand(s.Hand, s.EvoReady, s.EvoNear, 4);
             }
             catch { }
         }

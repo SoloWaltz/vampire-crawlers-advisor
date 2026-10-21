@@ -50,6 +50,8 @@ namespace VcAdvisor
             public string Key, Name;
             public float PredictedDamage;
             public float PredictedManaDelta;
+            public string HeroSig;
+            public int EvoReady;
         }
 
         private static PendingCase _pending;
@@ -57,6 +59,8 @@ namespace VcAdvisor
         private static int _prevCombo = -1;
         private static float _fHp, _fMana, _fInc;
         private static int _fCombo, _fHand;
+        private static string _fHeroSig = "";
+        private static int _fEvoReady;
         private static string _gameVersion;
 
         public static bool SandboxMode { get { return _sandbox; } }
@@ -166,6 +170,8 @@ namespace VcAdvisor
             _fInc = IncomingRatio(s);
             _fCombo = s.Combo;
             _fHand = s.Hand.Count;
+            _fHeroSig = s.Heroes != null ? string.Join(" / ", s.Heroes.ToArray()) : "";
+            _fEvoReady = s.EvoReady != null ? s.EvoReady.Count : 0;
 
             var sb = new StringBuilder();
             sb.Append("{\"t\":\"start\",\"ts\":").Append(Ts())
@@ -256,7 +262,9 @@ namespace VcAdvisor
                 Key = key,
                 Name = ci != null ? ci.Name : key,
                 PredictedDamage = ci != null ? ci.DealtDamage : -1f,
-                PredictedManaDelta = ci != null ? (ci.ManaGain - ci.Cost) : 0f
+                PredictedManaDelta = ci != null ? (ci.ManaGain - ci.Cost) : 0f,
+                HeroSig = _fHeroSig,
+                EvoReady = _fEvoReady
             };
 
             var sb = new StringBuilder();
@@ -365,6 +373,9 @@ namespace VcAdvisor
 
             sb.Append("],\"heroes\":\"").Append(Esc(string.Join(" / ", s.Heroes.ToArray()))).Append('"')
               .Append(",\"arcanas\":\"").Append(Esc(string.Join(" / ", s.Arcanas.ToArray()))).Append('"')
+              .Append(",\"heroSkills\":\"").Append(Esc(string.Join(" / ", s.HeroSkills.ToArray()))).Append('"')
+              .Append(",\"evoReady\":\"").Append(Esc(string.Join(" / ", s.EvoReady.ToArray()))).Append('"')
+              .Append(",\"evoNear\":\"").Append(Esc(string.Join(" / ", s.EvoNear.ToArray()))).Append('"')
               .Append(",\"hand\":[");
             for (int i = 0; i < s.Hand.Count; i++)
             {
@@ -400,6 +411,8 @@ namespace VcAdvisor
             _fInc = IncomingRatio(s);
             _fCombo = s.Combo;
             _fHand = s.Hand.Count;
+            _fHeroSig = s.Heroes != null ? string.Join(" / ", s.Heroes.ToArray()) : "";
+            _fEvoReady = s.EvoReady != null ? s.EvoReady.Count : 0;
         }
 
         #endregion
@@ -434,7 +447,9 @@ namespace VcAdvisor
                     ManaDelta = manaDelta,
                     ComboKept = kept,
                     Win = false,   // 单回合案例不依赖整局胜负
-                    Ticks = DateTime.UtcNow.Ticks
+                    Ticks = DateTime.UtcNow.Ticks,
+                    HeroSig = p.HeroSig,
+                    EvoReady = p.EvoReady
                 };
                 CaseLibrary.Add(c);
 

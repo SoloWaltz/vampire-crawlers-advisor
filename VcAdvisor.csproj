@@ -11,7 +11,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-    <Version>1.3.0</Version>
+    <Version>1.4.0</Version>
     <GameDir>d:\Steam\steamapps\common\Vampire Crawlers</GameDir>
     <BepInExCore>$(GameDir)\BepInEx\core</BepInExCore>
     <InteropDir>$(GameDir)\BepInEx\interop</InteropDir>
@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="cards.tsv" />
+    <EmbeddedResource Include="wiki.tsv" />
   </ItemGroup>
 
   <ItemGroup>

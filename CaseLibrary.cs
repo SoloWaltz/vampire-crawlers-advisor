@@ -20,7 +20,7 @@ namespace VcAdvisor
     /// </summary>
     public static class CaseLibrary
     {
-        public const int Schema = 2;
+        public const int Schema = 3;
         private const int MaxCases = 4000;
 
         public sealed class Case
@@ -39,6 +39,8 @@ namespace VcAdvisor
             public bool ComboKept;
             public bool Win;
             public long Ticks;
+            public string HeroSig;    // 英雄组合签名（用于区分阵容）
+            public int EvoReady;      // 出牌时手牌已集齐的进化配方数
         }
 
         public sealed class Result
@@ -104,6 +106,8 @@ namespace VcAdvisor
             if (mana > 1.5f) mana = 1.5f;
             float inc = s.Hp > 0.5f ? s.IncomingDamage / s.Hp : 0f;
             int hand = s.Hand != null ? s.Hand.Count : 0;
+            string heroSig = s.Heroes != null ? string.Join(" / ", s.Heroes.ToArray()) : "";
+            int evoReady = s.EvoReady != null ? s.EvoReady.Count : 0;
 
             var best = new List<KeyValuePair<double, Case>>();
             for (int i = 0; i < _cases.Count; i++)
@@ -115,7 +119,9 @@ namespace VcAdvisor
                          + 1.2 * Math.Abs(c.ManaRatio - mana)
                          + 2.0 * Math.Abs(c.IncomingRatio - inc)
                          + 0.35 * Math.Min(4, Math.Abs(c.Combo - s.Combo)) / 4.0
-                         + 0.25 * Math.Min(10, Math.Abs(c.HandCount - hand)) / 10.0;
+                         + 0.25 * Math.Min(10, Math.Abs(c.HandCount - hand)) / 10.0
+                         + 0.30 * Math.Min(4, Math.Abs(c.EvoReady - evoReady)) / 4.0
+                         + (c.HeroSig == heroSig ? 0.0 : 0.6);   // 阵容不同则降低相似度
                 best.Add(new KeyValuePair<double, Case>(d, c));
             }
             if (best.Count == 0) return r;
@@ -202,7 +208,9 @@ namespace VcAdvisor
                   .Append(F(c.ManaDelta)).Append('\t')
                   .Append(c.ComboKept ? '1' : '0').Append('\t')
                   .Append(c.Win ? '1' : '0').Append('\t')
-                  .Append(c.Ticks);
+                  .Append(c.Ticks).Append('\t')
+                  .Append(Clean(c.HeroSig)).Append('\t')
+                  .Append(c.EvoReady);
                 File.AppendAllText(_file, sb.ToString() + "\n", new UTF8Encoding(false));
             }
             catch { }
@@ -214,7 +222,7 @@ namespace VcAdvisor
             {
                 if (string.IsNullOrEmpty(line)) return null;
                 var p = line.Split('\t');
-                if (p.Length < 14) return null;
+                if (p.Length < 16) return null;
                 int schema = I(p[0]);
                 if (schema != Schema) return null;
 
@@ -233,6 +241,8 @@ namespace VcAdvisor
                 c.ComboKept = p[11] == "1";
                 c.Win = p[12] == "1";
                 c.Ticks = long.Parse(p[13], CultureInfo.InvariantCulture);
+                c.HeroSig = p[14];
+                c.EvoReady = I(p[15]);
                 return c;
             }
             catch { return null; }

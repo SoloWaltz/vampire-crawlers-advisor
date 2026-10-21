@@ -14,7 +14,7 @@ namespace VcAdvisor
         public const string PluginGuid = "vampirecrawlers.advisor";
         public const string PluginName = "Vampire Crawlers 打牌助手";
         // 版本规则：每次内容新增或修改，次版本号 +0.1（1.0.0 → 1.1.0 → 1.2.0 …）
-        public const string PluginVersion = "1.3.0";
+        public const string PluginVersion = "1.4.0";
 
         internal static ManualLogSource Logger;
 
@@ -231,6 +231,19 @@ namespace VcAdvisor
             if (s.Heroes.Count > 0)
                 R(rows, "英雄：" + string.Join(" · ", s.Heroes.ToArray()), 1);
 
+            // 英雄技能（内置 Wiki）：进阶模式下展开，简化模式不占空间
+            if (adv && s.HeroSkills.Count > 0)
+            {
+                for (int i = 0; i < s.HeroSkills.Count; i++)
+                    R(rows, "   " + s.HeroSkills[i], 4);
+            }
+
+            // 进化配方状态：手牌集齐或接近集齐时提示
+            if (s.EvoReady.Count > 0)
+                R(rows, "可进化：" + string.Join(" / ", s.EvoReady.ToArray()), 3);
+            else if (s.EvoNear.Count > 0)
+                R(rows, "进化材料：" + string.Join(" / ", s.EvoNear.ToArray()) + "（还缺材料）", 4);
+
             // —— ① 出牌顺序（核心）——
             R(rows, "", 2);
             if (s.Hand.Count == 0)
@@ -272,6 +285,17 @@ namespace VcAdvisor
 
                             var dr = Add(rows, string.Format("{0}   分值 {1}", costTxt, c.Score), 3);
                             dr.Indent = 22;
+
+                            // 首推卡片的 Wiki 简介（进阶模式）
+                            if (adv)
+                            {
+                                string desc = WikiData.CardDesc(c.Name);
+                                if (!string.IsNullOrEmpty(desc))
+                                {
+                                    var rr = Add(rows, desc, 4);
+                                    rr.Indent = 22;
+                                }
+                            }
                         }
                         else
                         {
