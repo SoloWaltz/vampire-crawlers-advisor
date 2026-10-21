@@ -14,7 +14,7 @@ namespace VcAdvisor
         public const string PluginGuid = "vampirecrawlers.advisor";
         public const string PluginName = "Vampire Crawlers 打牌助手";
         // 版本规则：每次内容新增或修改，次版本号 +0.1（1.0.0 → 1.1.0 → 1.2.0 …）
-        public const string PluginVersion = "1.4.0";
+        public const string PluginVersion = "1.5.0";
 
         internal static ManualLogSource Logger;
 
@@ -105,6 +105,15 @@ namespace VcAdvisor
             return row;
         }
 
+        /// <summary>把从 start 开始新增的行标记为指定标签页（0 出牌 1 敌情 2 牌库 3 资料）。</summary>
+        private static void TagRows(List<CompanionWindow.Row> rows, int start, int tab)
+        {
+            for (int i = start; i < rows.Count; i++)
+            {
+                if (rows[i].Tab < 0) rows[i].Tab = tab;   // 已显式指定标签页的行不覆盖
+            }
+        }
+
         /// <summary>费用文本：W / 基础→实际 / 普通，并附加回蓝与伤害。</summary>
         private static string CostText(CardInfo c)
         {
@@ -178,7 +187,7 @@ namespace VcAdvisor
             foreach (var r in rows)
                 sig.Append(r.Kind).Append(':').Append(r.Indent).Append(':').Append(r.Rank).Append(':')
                    .Append(r.Icon).Append(':').Append(r.IconColor).Append(':').Append(r.Hero ? '1' : '0').Append(':')
-                   .Append(r.Card ? '1' : '0').Append(':')
+                   .Append(r.Card ? '1' : '0').Append(':').Append(r.Tab).Append(':')
                    .Append(r.Text).Append('\n');
             string key = sig.ToString();
 
@@ -231,14 +240,8 @@ namespace VcAdvisor
             if (s.Heroes.Count > 0)
                 R(rows, "英雄：" + string.Join(" · ", s.Heroes.ToArray()), 1);
 
-            // 英雄技能（内置 Wiki）：进阶模式下展开，简化模式不占空间
-            if (adv && s.HeroSkills.Count > 0)
-            {
-                for (int i = 0; i < s.HeroSkills.Count; i++)
-                    R(rows, "   " + s.HeroSkills[i], 4);
-            }
-
-            // 进化配方状态：手牌集齐或接近集齐时提示
+            // 进化配方状态（归入出牌页）
+            int playStart = rows.Count;
             if (s.EvoReady.Count > 0)
                 R(rows, "可进化：" + string.Join(" / ", s.EvoReady.ToArray()), 3);
             else if (s.EvoNear.Count > 0)
@@ -294,6 +297,7 @@ namespace VcAdvisor
                                 {
                                     var rr = Add(rows, desc, 4);
                                     rr.Indent = 22;
+                                    rr.Tab = 3;   // 卡牌说明归入资料页，避免出牌页被撑长
                                 }
                             }
                         }
@@ -361,7 +365,17 @@ namespace VcAdvisor
             }
             catch { }
 
+            // —— 流派匹配提示（Wiki #builds）：归入出牌页底部 ——
+            if (!string.IsNullOrEmpty(s.BuildTitle))
+            {
+                R(rows, string.Format("流派：{0}（匹配 {1:0}%）", s.BuildTitle, s.BuildMatch * 100f), 3);
+                if (!string.IsNullOrEmpty(s.BuildTip)) R(rows, "   · " + s.BuildTip, 4);
+            }
+
+            TagRows(rows, playStart, 0);
+
             // —— ② 敌方威胁 ——
+            int enemyStart = rows.Count;
             if (s.HasEnemy)
             {
                 R(rows, "", 2);
@@ -412,7 +426,10 @@ namespace VcAdvisor
                     R(rows, string.Format("… 另有 {0} 种未列出", groups.Count - m), 4);
             }
 
+            TagRows(rows, enemyStart, 1);
+
             // —— ④ 牌库构成 ——
+            int deckStart = rows.Count;
             R(rows, "", 2);
             R(rows, string.Format("牌库：抽牌 {0} · 弃牌 {1} · 销毁 {2} · 连击 {3}",
                 s.DrawCount, s.DiscardCount, s.DestroyCount, s.ComboPileCount), 1);
@@ -430,7 +447,17 @@ namespace VcAdvisor
                     R(rows, string.Format("     … 另有 {0} 类牌", s.DrawComposition.Count - m), 4);
             }
 
-            // —— ⑤ 奥术 / 属性（对应游戏左上、右上增益）：优先级最低，统一放底部并弱化显示 ——
+            TagRows(rows, deckStart, 2);
+
+            // —— ⑤ 资料页：英雄技能 / 奥术 / 属性 ——
+            int infoStart = rows.Count;
+            if (adv && s.HeroSkills.Count > 0)
+            {
+                R(rows, "英雄技能", 1);
+                for (int i = 0; i < s.HeroSkills.Count; i++)
+                    R(rows, "   " + s.HeroSkills[i], 4);
+            }
+
             if (s.Arcanas.Count > 0 || s.Stats.Count > 0)
             {
                 R(rows, "", 2);
@@ -459,6 +486,8 @@ namespace VcAdvisor
                     if (bad.Length > 0) R(rows, "减益：" + bad, 4);
                 }
             }
+
+            TagRows(rows, infoStart, 3);
 
             return rows;
         }

@@ -199,6 +199,20 @@ namespace VcAdvisor
                 }
                 if (c.FreeToPlay) c.Reasons.Add("游戏判定本次免费打出");
 
+                // —— 流派契合：Wiki 构筑方案里点名的核心卡，轻微加权 ——
+                if (!string.IsNullOrEmpty(s.BuildTitle) && s.BuildCards.Count > 0)
+                {
+                    for (int k = 0; k < s.BuildCards.Count; k++)
+                    {
+                        if (s.BuildCards[k] == c.Name)
+                        {
+                            score += 7;
+                            c.Reasons.Add("契合流派「" + s.BuildTitle + "」的核心卡");
+                            break;
+                        }
+                    }
+                }
+
                 c.Score = score;
             }
 

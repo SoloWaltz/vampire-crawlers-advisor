@@ -41,6 +41,20 @@ namespace VcAdvisor
             public string Output;
         }
 
+        /// <summary>Wiki 的流派/构筑方案。</summary>
+        public sealed class Build
+        {
+            public string Id;
+            public string Title;
+            public string Style;
+            public string Summary;
+            public List<string> Characters = new List<string>();
+            public List<string> Cards = new List<string>();
+            public List<string> Arcanas = new List<string>();
+            public List<string> Order = new List<string>();
+            public List<string> Limits = new List<string>();
+        }
+
         private static bool _loaded;
         private static readonly Dictionary<string, WikiChar> _chars = new Dictionary<string, WikiChar>(StringComparer.Ordinal);
         private static readonly Dictionary<string, WikiCard> _cards = new Dictionary<string, WikiCard>(StringComparer.Ordinal);
@@ -48,6 +62,7 @@ namespace VcAdvisor
         private static readonly Dictionary<string, string> _gems = new Dictionary<string, string>(StringComparer.Ordinal);
         private static readonly Dictionary<string, string> _effects = new Dictionary<string, string>(StringComparer.Ordinal);
         private static readonly List<Recipe> _recipes = new List<Recipe>();
+        private static readonly List<Build> _builds = new List<Build>();
 
         public static int CharacterCount { get { return _chars.Count; } }
         public static int CardCount { get { return _cards.Count; } }
@@ -134,6 +149,24 @@ namespace VcAdvisor
                                     if (p.Length >= 2)
                                         _effects[p[0]] = p[1];
                                     break;
+                                case "BUILDS":
+                                    if (p.Length >= 9)
+                                    {
+                                        var b = new Build
+                                        {
+                                            Id = p[0],
+                                            Title = p[1],
+                                            Style = p[2],
+                                            Summary = p[8]
+                                        };
+                                        b.Characters = SplitList(p[3]);
+                                        b.Cards = SplitList(p[4]);
+                                        b.Arcanas = SplitList(p[5]);
+                                        b.Order = SplitList(p[6]);
+                                        b.Limits = SplitList(p[7]);
+                                        _builds.Add(b);
+                                    }
+                                    break;
                             }
                         }
                     }
@@ -141,8 +174,8 @@ namespace VcAdvisor
                 try
                 {
                     AdvisorPlugin.Logger.LogInfo(string.Format(
-                        "[Wiki] 已加载：角色 {0}、卡牌 {1}、奥术 {2}、宝石 {3}、进化配方 {4}、关键词 {5}",
-                        _chars.Count, _cards.Count, _arcanas.Count, _gems.Count, _recipes.Count, _effects.Count));
+                        "[Wiki] 已加载：角色 {0}、卡牌 {1}、奥术 {2}、宝石 {3}、进化配方 {4}、关键词 {5}、流派 {6}",
+                        _chars.Count, _cards.Count, _arcanas.Count, _gems.Count, _recipes.Count, _effects.Count, _builds.Count));
                 }
                 catch { }
             }
@@ -201,6 +234,91 @@ namespace VcAdvisor
             EnsureLoaded();
             string s;
             return _effects.TryGetValue(effectName, out s) ? s : null;
+        }
+
+        /// <summary>
+        /// 根据当前英雄、手牌、奥术匹配最接近的 Wiki 流派。
+        /// 匹配度低于 25% 时返回 null，避免生搬硬套。
+        /// </summary>
+        public static Build BestBuild(List<string> heroes, List<CardInfo> hand, List<string> arcanas, out float match)
+        {
+            EnsureLoaded();
+            match = 0f;
+            Build best = null;
+            float bestScore = 0f;
+            if (_builds.Count == 0) return null;
+
+            var handNames = new HashSet<string>(StringComparer.Ordinal);
+            if (hand != null)
+            {
+                for (int i = 0; i < hand.Count; i++)
+                {
+                    if (hand[i] != null && !string.IsNullOrEmpty(hand[i].Name)) handNames.Add(hand[i].Name);
+                }
+            }
+
+            for (int i = 0; i < _builds.Count; i++)
+            {
+                var b = _builds[i];
+                int total = b.Characters.Count * 2 + Math.Min(b.Cards.Count, 5) + b.Arcanas.Count;
+                if (total <= 0) continue;
+
+                int hit = 0;
+                for (int k = 0; k < b.Characters.Count; k++)
+                    if (HeroMatches(heroes, b.Characters[k])) hit += 2;
+
+                int cardHits = 0;
+                for (int k = 0; k < b.Cards.Count && cardHits < 5; k++)
+                    if (handNames.Contains(b.Cards[k])) { hit++; cardHits++; }
+
+                for (int k = 0; k < b.Arcanas.Count; k++)
+                    if (ContainsName(arcanas, b.Arcanas[k])) hit++;
+
+                float score = (float)hit / total;
+                if (score > bestScore) { bestScore = score; best = b; }
+            }
+
+            match = bestScore;
+            return bestScore >= 0.25f ? best : null;
+        }
+
+        private static bool HeroMatches(List<string> heroes, string fullName)
+        {
+            if (heroes == null || string.IsNullOrEmpty(fullName)) return false;
+            for (int i = 0; i < heroes.Count; i++)
+            {
+                string h = heroes[i];
+                if (string.IsNullOrEmpty(h)) continue;
+                if (h == fullName) return true;
+                if (fullName.IndexOf(h, StringComparison.Ordinal) >= 0) return true;
+                if (h.IndexOf(fullName, StringComparison.Ordinal) >= 0) return true;
+            }
+            return false;
+        }
+
+        private static bool ContainsName(List<string> list, string name)
+        {
+            if (list == null || string.IsNullOrEmpty(name)) return false;
+            for (int i = 0; i < list.Count; i++)
+            {
+                string s = list[i];
+                if (string.IsNullOrEmpty(s)) continue;
+                if (s == name || s.IndexOf(name, StringComparison.Ordinal) >= 0) return true;
+            }
+            return false;
+        }
+
+        private static List<string> SplitList(string s)
+        {
+            var list = new List<string>();
+            if (string.IsNullOrEmpty(s)) return list;
+            var parts = s.Split('|');
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string t = parts[i].Trim();
+                if (t.Length > 0) list.Add(t);
+            }
+            return list;
         }
 
         /// <summary>

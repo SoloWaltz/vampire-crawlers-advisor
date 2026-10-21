@@ -376,6 +376,8 @@ namespace VcAdvisor
               .Append(",\"heroSkills\":\"").Append(Esc(string.Join(" / ", s.HeroSkills.ToArray()))).Append('"')
               .Append(",\"evoReady\":\"").Append(Esc(string.Join(" / ", s.EvoReady.ToArray()))).Append('"')
               .Append(",\"evoNear\":\"").Append(Esc(string.Join(" / ", s.EvoNear.ToArray()))).Append('"')
+              .Append(",\"build\":\"").Append(Esc(s.BuildTitle ?? "")).Append('"')
+              .Append(",\"buildMatch\":").Append(F(s.BuildMatch))
               .Append(",\"hand\":[");
             for (int i = 0; i < s.Hand.Count; i++)
             {

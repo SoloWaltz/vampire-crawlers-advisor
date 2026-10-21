@@ -25,6 +25,7 @@ namespace VcAdvisor
             public int Rank;          // >0 时在图标位置画序号徽章
             public bool Hero;         // 首推：大字号 + 整行高亮底
             public bool Card;         // 圆角卡片底（普通出牌条目）
+            public int Tab = -1;      // -1 = 所有标签页可见；0 出牌 1 敌情 2 牌库 3 资料
         }
 
         /// <summary>把 RGB 组装成 GDI 的 COLORREF（0x00BBGGRR）。</summary>
@@ -73,6 +74,12 @@ namespace VcAdvisor
         private static int _scrollY;
         private static int _maxScroll;
         private static IntPtr _hArrow, _hSize;
+
+        // —— 标签页 ——
+        private static int _tab;                                  // 0 出牌 1 敌情 2 牌库 3 资料
+        private static readonly string[] TAB_NAMES = { "出牌", "敌情", "牌库", "资料" };
+        private static readonly RECT[] _tabRects = new RECT[4];
+        private static readonly List<Row> _shown = new List<Row>();
 
         private static readonly List<Row> _paint = new List<Row>();
         private static readonly List<int> _rowTop = new List<int>();
@@ -418,6 +425,7 @@ namespace VcAdvisor
 
         private const int PAD = 10;
         private const int TITLE_H = 36;   // 标题栏留足高度，让标题/按钮/徽记在同一水平中心
+        private const int TAB_H = 26;     // 标签页高度
         private const int BTN_W = 42;
         private const int BTN_H = 20;
         private const int CLOSE_W = 20;
@@ -820,17 +828,39 @@ namespace VcAdvisor
                 _btnCollapse = new RECT { left = _btnClose.left - 6 - BTN_W, top = by, right = _btnClose.left - 6, bottom = by + BTN_H };
                 _btnAdv = new RECT { left = _btnCollapse.left - 6 - BTN_W, top = by, right = _btnCollapse.left - 6, bottom = by + BTN_H };
 
+                // 标签页
+                int tabTop = 1 + TITLE_H;
+                int tabW = (cw - PAD * 2) / 4;
+                for (int i = 0; i < 4; i++)
+                {
+                    _tabRects[i] = new RECT
+                    {
+                        left = PAD + i * tabW,
+                        top = tabTop + 2,
+                        right = PAD + (i + 1) * tabW - 4,
+                        bottom = tabTop + TAB_H - 2
+                    };
+                }
+
+                // 只排版当前标签页的行（Tab=-1 的行在所有页都显示）
+                _shown.Clear();
+                for (int i = 0; i < _paint.Count; i++)
+                {
+                    var r = _paint[i];
+                    if (r.Tab < 0 || r.Tab == _tab) _shown.Add(r);
+                }
+
                 IntPtr dc = GetDC(hWnd);
                 int innerW = cw - PAD * 2;
                 _rowTop.Clear();
                 _rowH.Clear();
 
-                int y = 1 + TITLE_H + PAD;
+                int y = 1 + TITLE_H + TAB_H + PAD;
                 if (!_collapsed)
                 {
-                    for (int i = 0; i < _paint.Count; i++)
+                    for (int i = 0; i < _shown.Count; i++)
                     {
-                        var row = _paint[i];
+                        var row = _shown[i];
                         _rowTop.Add(y);
                         if (string.IsNullOrEmpty(row.Text))
                         {
@@ -851,9 +881,9 @@ namespace VcAdvisor
                 }
                 ReleaseDC(hWnd, dc);
 
-                int contentTop = 1 + TITLE_H + PAD;
+                int contentTop = 1 + TITLE_H + TAB_H + PAD;
                 int contentBottom = y;
-                int minH = 1 + TITLE_H + PAD * 2;
+                int minH = 1 + TITLE_H + TAB_H + PAD * 2;
                 int totalH = contentBottom + PAD;
                 if (totalH < minH) totalH = minH;
 
@@ -1038,19 +1068,27 @@ namespace VcAdvisor
             DrawBtn(dc, _btnCollapse, _collapsed ? "展开" : "收起", 2);
             DrawBtn(dc, _btnClose, "×", 3);
 
+            // 标签页
+            for (int i = 0; i < 4; i++)
+            {
+                bool active = _tab == i;
+                FillRound(dc, _tabRects[i], active ? C_BTN_HOT : C_BG, 6);
+                DrawTextCentered(dc, TAB_NAMES[i], _tabRects[i], _fBtn, active ? C_GOLD : C_TEXT_SUB);
+            }
+
             if (!_collapsed)
             {
                 int innerW = cw - PAD * 2;
                 int saved = SaveDC(dc);
-                try { IntersectClipRect(dc, 1, 1 + TITLE_H, cw - 1, ch - 1); } catch { }
+                try { IntersectClipRect(dc, 1, 1 + TITLE_H + TAB_H, cw - 1, ch - 1); } catch { }
 
-                for (int i = 0; i < _paint.Count && i < _rowTop.Count; i++)
+                for (int i = 0; i < _shown.Count && i < _rowTop.Count; i++)
                 {
-                    var row = _paint[i];
+                    var row = _shown[i];
                     int ry = _rowTop[i];
                     int rh = _rowH[i];
 
-                    if (ry + rh < 1 + TITLE_H || ry > ch) continue;   // 不在可视区
+                    if (ry + rh < 1 + TITLE_H + TAB_H || ry > ch) continue;   // 不在可视区
                     if (string.IsNullOrEmpty(row.Text)) continue;
 
                     bool hover = i == _hoverRow;
@@ -1102,9 +1140,9 @@ namespace VcAdvisor
                 // 滚动条：内容超出可视区时出现（只做导航，不表达任何数值）
                 if (_maxScroll > 0)
                 {
-                    RECT track = new RECT { left = cw - 7, top = 1 + TITLE_H + 4, right = cw - 3, bottom = ch - 6 };
+                    RECT track = new RECT { left = cw - 7, top = 1 + TITLE_H + TAB_H + 4, right = cw - 3, bottom = ch - 6 };
                     FillRound(dc, track, C_SCROLL_TRACK, 4);
-                    int viewH = ch - (1 + TITLE_H) - PAD;
+                    int viewH = ch - (1 + TITLE_H + TAB_H) - PAD;
                     int total = viewH + _maxScroll;
                     int thumbH = total > 0 ? Math.Max(24, viewH * viewH / total) : 24;
                     int travel = (track.bottom - track.top) - thumbH;
@@ -1431,6 +1469,25 @@ namespace VcAdvisor
                     case WM_LBUTTONDOWN:
                         {
                             POINT p = MouseClientPoint(lParam);
+
+                            // 标签页切换
+                            for (int i = 0; i < 4; i++)
+                            {
+                                if (PtIn(_tabRects[i], p))
+                                {
+                                    if (_tab != i)
+                                    {
+                                        _tab = i;
+                                        _scrollY = 0;
+                                        _hoverRow = -1;
+                                        Layout(hWnd);
+                                        InvalidateRect(hWnd, IntPtr.Zero, false);
+                                        Log("切换标签页 → " + TAB_NAMES[i]);
+                                    }
+                                    return IntPtr.Zero;
+                                }
+                            }
+
                             if (PtIn(_btnClose, p))
                             {
                                 _visible = false;

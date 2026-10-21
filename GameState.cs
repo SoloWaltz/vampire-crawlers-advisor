@@ -115,6 +115,10 @@ namespace VcAdvisor
         public List<string> HeroSkills = new List<string>();  // 英雄技能（来自内置 Wiki）
         public List<string> EvoReady = new List<string>();    // 手牌已集齐的进化配方
         public List<string> EvoNear = new List<string>();     // 手牌只差一部分的进化配方
+        public string BuildTitle = "";                        // 匹配到的 Wiki 流派
+        public float BuildMatch;                              // 流派匹配度 0..1
+        public List<string> BuildCards = new List<string>();  // 该流派的核心卡
+        public string BuildTip = "";                          // 该流派的第一条顺序建议
 
         // —— 对局记录用：游戏自己的出牌历史（权威来源，比手牌差分可靠）——
         public List<string> TurnPlayed = new List<string>();      // 本回合已打出的卡牌 AssetId（按顺序）
@@ -479,6 +483,17 @@ namespace VcAdvisor
                 }
 
                 WikiData.RecipesInHand(s.Hand, s.EvoReady, s.EvoNear, 4);
+
+                // 流派匹配（Wiki #builds）：只做提示与轻微加权
+                float bm;
+                var build = WikiData.BestBuild(s.Heroes, s.Hand, s.Arcanas, out bm);
+                if (build != null)
+                {
+                    s.BuildTitle = build.Title;
+                    s.BuildMatch = bm;
+                    s.BuildCards.AddRange(build.Cards);
+                    if (build.Order.Count > 0) s.BuildTip = build.Order[0];
+                }
             }
             catch { }
         }
