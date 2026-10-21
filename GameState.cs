@@ -13,7 +13,10 @@ namespace VcAdvisor
     {
         public string Key;            // CardConfig.AssetId，如 MAGIC_WAND
         public string Name;           // 中文名
-        public int Cost;              // 当前实际费用
+        public int Cost;              // 当前实际费用（含所有修正）
+        public int BaseCost = -1;     // 配置基础费用（-1 = 未取到）
+        public int DealtDamage = -1;  // 运行时伤害（取自游戏 DamageEffect；-1 = 非伤害牌/未取到）
+        public int InstanceId;        // 卡牌实例 ID（区分同名不同实例）
         public string TypeId;         // 游戏内卡牌类型 id
         public string GroupId;        // 卡牌分组 id
         public bool IsWeapon;
@@ -62,7 +65,8 @@ namespace VcAdvisor
 
         public bool InEncounter;
         public int Turn;                          // 游戏原始值（0 基，首回合为 0）
-        public int TurnDisplay = -1;              // 展示用回合数（游戏值 +1；未知时为 -1）
+        public int TurnEffective;                 // 实际采用的回合号（原生字段优先，异常时用事件推断兜底）
+        public int TurnDisplay = -1;              // 展示用回合数（有效值 +1；未知时为 -1）
         public int TotalTurn = -1;                // 全局回合计数（诊断用）
         public int NextComboCost = -1;            // 连击阶梯上“下一张”应有的费用（-1 = 未知）
         public int Combo;
@@ -104,6 +108,10 @@ namespace VcAdvisor
         public List<EnemyInfo> Enemies = new List<EnemyInfo>();
         public int IncomingDamage;      // 本回合预计受到的伤害合计
         public List<StatInfo> Stats = new List<StatInfo>();   // 我方增益/减益
+
+        // —— 对局记录用：游戏自己的出牌历史（权威来源，比手牌差分可靠）——
+        public List<string> TurnPlayed = new List<string>();      // 本回合已打出的卡牌 AssetId（按顺序）
+        public int EncounterPlayedCount;                          // 本次遭遇累计出牌数
     }
 
     /// <summary>
@@ -113,6 +121,14 @@ namespace VcAdvisor
     {
         private static float _hpPeak;
         private static float _manaPeak;
+
+        // —— 回合号兜底推断（原生字段异常时使用）——
+        private static int _turnLocal;
+        private static bool _hadEnemyLast;
+        private static bool _turnDiaged;
+        private static int _cantPlayAt;      // 进入“不能出牌”状态的时间（Environment.TickCount）
+        private static int _lastTurnAt;      // 上一次判定新回合的时间
+        private static int _encStartAt;      // 本次遭遇开始时间
 
         public static float HpPeak { get { return _hpPeak; } }
         public static float ManaPeak { get { return _manaPeak; } }
@@ -143,16 +159,16 @@ namespace VcAdvisor
                 s.Valid = true;
 
                 try { s.InEncounter = player.IsInEncounter; } catch { }
-                try { s.Turn = player.EncounterTurnCount; } catch { }
+                // 回合号：属性 EncounterTurnCount 实测恒为 0，真正的实时值在同名私有字段上
+                bool nativeTurnOk = false;
+                try { s.Turn = player._encounterTurnCount; nativeTurnOk = true; }
+                catch { try { s.Turn = player.EncounterTurnCount; nativeTurnOk = true; } catch { } }
                 try { if (player.TotalTurnCount != null) s.TotalTurn = player.TotalTurnCount.Value; } catch { }
                 try { s.Combo = player.ComboMultiplier; } catch { }
                 try { s.ReverseCombo = player.ReverseCombo; } catch { }
                 try { s.CachedMana = player.CachedMana; } catch { }
                 try { s.CanPlayCard = player.CanPlayCard; } catch { }
                 try { s.IsTurnEnding = player.IsTurnEnding; } catch { }
-
-                // 回合展示值：游戏内部按 0 基计数（首回合 = 0），+1 后与游戏界面体感一致
-                s.TurnDisplay = s.Turn + 1;
 
                 // 连击阶梯：游戏把“上一张连击牌的费用”放在 PreviousComboCardCost，
                 // 正向连击下一张必须 +1 费，逆向（ReverseCombo）则 -1 费。
@@ -200,17 +216,40 @@ namespace VcAdvisor
                     {
                         for (int i = 0; i < cards.Count; i++)
                         {
-                            var ci = ReadCard(cards[i]);
+                            var ci = ReadCard(cards[i], player, s.Combo);
                             if (ci == null) continue;
                             // 直接问游戏：这张牌能否接上当前连击（连击判定的唯一权威来源）
                             try { ci.InCombo = player.IsCardInCombo(cards[i].TryCast<ICardModel>(), false); } catch { }
+                            // 连击状态确定后再算回蓝/伤害：这两个值都会随连击倍率变化
+                            ApplyRuntimeValues(ci, cards[i], player, ci.InCombo, s.Combo);
                             s.Hand.Add(ci);
                         }
                     }
                 }
                 catch { }
 
-                // 抽牌堆构成
+                // 出牌历史：游戏自己维护的 TurnHistory / EncounterHistory，是“玩家实际出了什么”的权威来源
+                try
+                {
+                    var th = player.TurnHistory;
+                    var list = th != null ? th._cardHistoryList : null;
+                    if (list != null)
+                    {
+                        for (int i = 0; i < list.Count; i++)
+                        {
+                            var cc = list[i];
+                            if (cc != null && !string.IsNullOrEmpty(cc.AssetId)) s.TurnPlayed.Add(cc.AssetId);
+                        }
+                    }
+                }
+                catch { }
+                try
+                {
+                    var eh = player.EncounterHistory;
+                    var list = eh != null ? eh._cardHistoryList : null;
+                    if (list != null) s.EncounterPlayedCount = list.Count;
+                }
+                catch { }
                 try
                 {
                     var draw = player.DrawPile;
@@ -222,7 +261,7 @@ namespace VcAdvisor
                         var dict = new Dictionary<string, int>();
                         for (int i = 0; i < dcards.Count; i++)
                         {
-                            var ci = ReadCard(dcards[i]);
+                            var ci = ReadCard(dcards[i], player, s.Combo);
                             if (ci == null) continue;
                             int c;
                             dict.TryGetValue(ci.Name, out c);
@@ -258,6 +297,7 @@ namespace VcAdvisor
 
                 ReadEnemy(s, player);
                 ReadStats(s, player);
+                ResolveTurn(s, nativeTurnOk);
 
                 if (!s.InEncounter && s.Hand.Count == 0)
                     s.Message = "当前不在战斗中，暂无手牌";
@@ -268,6 +308,83 @@ namespace VcAdvisor
                 s.Message = "读取失败: " + e.Message;
             }
             return s;
+        }
+
+        /// <summary>
+        /// 解析“当前是第几回合”。
+        /// 优先用玩家对象上的实时字段；若该字段异常（实测恒为 0），
+        /// 则退化为事件推断：CanPlayCard 由 false→true 视为新回合开始。
+        /// </summary>
+        private static void ResolveTurn(Snapshot s, bool nativeOk)
+        {
+            try
+            {
+                // 「战斗中」必须要求还有活着的敌人：敌人全灭后遭遇对象仍可能存在
+                bool inCombat = s.HasEnemy && s.EnemyCount > 0;
+                if (inCombat)
+                {
+                    if (!_hadEnemyLast)
+                    {
+                        _turnLocal = nativeOk ? s.Turn : 0;
+                        _turnDiaged = false;
+                        _encStartAt = Environment.TickCount;
+                        _lastTurnAt = Environment.TickCount;
+                        _cantPlayAt = s.CanPlayCard ? 0 : Environment.TickCount;
+                    }
+                    else
+                    {
+                        // 回合开始信号：玩家从“不能出牌”恢复为“可以出牌”
+                        // 注意 CanPlayCard 在动画期间会短暂闪烁，必须过滤：
+                        //   - “不能出牌”持续时间 >= 400ms 才算真正的敌方回合
+                        //   - 两次判定间隔 >= 800ms，避免同一边界重复计数
+                        //   - 遭遇开始 1.5s 内不计（避免把开场动画当成第二回合）
+                        if (!s.CanPlayCard)
+                        {
+                            if (_cantPlayAt == 0) _cantPlayAt = Environment.TickCount;
+                        }
+                        else if (_cantPlayAt != 0)
+                        {
+                            int dur = Environment.TickCount - _cantPlayAt;
+                            int since = Environment.TickCount - _lastTurnAt;
+                            int sinceStart = Environment.TickCount - _encStartAt;
+                            if (dur >= 400 && since >= 800 && sinceStart >= 1500)
+                            {
+                                _turnLocal++;
+                                _lastTurnAt = Environment.TickCount;
+                            }
+                            _cantPlayAt = 0;
+                        }
+                    }
+
+                    if (!_turnDiaged)
+                    {
+                        _turnDiaged = true;
+                        try
+                        {
+                            AdvisorPlugin.Logger.LogInfo(string.Format(
+                                "[回合] 原生字段={0} 推断值={1}", nativeOk ? s.Turn.ToString() : "读取失败", _turnLocal));
+                        }
+                        catch { }
+                    }
+                }
+                else
+                {
+                    _turnLocal = 0;
+                }
+
+                _hadEnemyLast = inCombat;
+                if (!inCombat) _cantPlayAt = 0;
+
+                // 原生字段 >0 说明它在正常推进；否则用推断值
+                int effective = (nativeOk && s.Turn > 0) ? s.Turn : _turnLocal;
+                s.TurnEffective = effective;
+                s.TurnDisplay = effective + 1;
+            }
+            catch
+            {
+                s.TurnEffective = s.Turn;
+                s.TurnDisplay = s.Turn + 1;
+            }
         }
 
         private static void ReadEnemy(Snapshot s, PlayerModel player)
@@ -503,6 +620,7 @@ namespace VcAdvisor
         private static readonly Dictionary<string, string> _nameCache =
             new Dictionary<string, string>(StringComparer.Ordinal);
         private static readonly HashSet<string> _nameDiag = new HashSet<string>(StringComparer.Ordinal);
+        private static readonly HashSet<string> _wildDiag = new HashSet<string>(StringComparer.Ordinal);
 
         /// <summary>
         /// 卡名解析：优先向游戏自身索取名称（CardConfig.cardName 的本地化文本 → CardModel.Name），
@@ -539,12 +657,14 @@ namespace VcAdvisor
             return pick;
         }
 
-        public static CardInfo ReadCard(CardModel cm)
+        public static CardInfo ReadCard(CardModel cm, PlayerModel player = null, int combo = 1)
         {
             if (cm == null) return null;
             var ci = new CardInfo();
             try
             {
+                try { ci.InstanceId = cm.GetInstanceID(); } catch { }
+
                 GameCardConfig cfg = null;
                 try { cfg = cm.CardConfig; } catch { }
 
@@ -552,10 +672,12 @@ namespace VcAdvisor
                 ci.Name = ResolveName(cm, cfg, ci.Key);
 
                 int cost = 0;
+                int baseCost = -1;
                 if (cfg != null)
                 {
-                    try { cost = cfg.manaCost; } catch { }
+                    try { baseCost = cfg.manaCost; cost = cfg.manaCost; } catch { }
                 }
+                ci.BaseCost = baseCost;
                 try { cost += cm.ManaCostModifier; } catch { }
                 try { cost += cm.TempManaCostModifier; } catch { }
                 try { cost += cm.ConfuseManaCostModifier; } catch { }
@@ -593,10 +715,79 @@ namespace VcAdvisor
                 }
                 catch { }
 
-                try { ci.ManaGain = ReadManaGain(cfg, ci.Cost); } catch { }
+                // W（万能）牌：按玩家实测语义，不消耗法力且仍能续连击。
+                // 统一按 0 费参与计划，避免把 W 当成“高费卡”而漏掉最佳连击路线。
+                if (ci.Wild && ci.Cost != 0)
+                {
+                    if (!string.IsNullOrEmpty(ci.Key) && _wildDiag.Add(ci.Key))
+                    {
+                        try
+                        {
+                            AdvisorPlugin.Logger.LogInfo(string.Format(
+                                "[费用] W牌 {0} 手工费用={1} → 按 0 费参与计划（万能/免费/续连击）", ci.Key, ci.Cost));
+                        }
+                        catch { }
+                    }
+                    ci.Cost = 0;
+                }
+
+                try { ci.ManaGain = ReadManaGain(cm, player, cfg, ci.Cost, false); } catch { }
+                try { ci.DealtDamage = ReadDamage(player, cm, cfg, combo, false); } catch { }
             }
             catch { }
             return ci;
+        }
+
+        /// <summary>
+        /// 在“能否续连击”确定之后，重算随连击倍率变化的运行时数值（回蓝、伤害）。
+        /// 例：某书配置回蓝 3，连击 x4 时实际回 12 —— 只读配置会严重低估。
+        /// </summary>
+        public static void ApplyRuntimeValues(CardInfo ci, CardModel cm, PlayerModel player, bool inCombo, int combo)
+        {
+            if (ci == null || cm == null) return;
+            GameCardConfig cfg = null;
+            try { cfg = cm.CardConfig; } catch { }
+            try { ci.ManaGain = ReadManaGain(cm, player, cfg, ci.Cost, inCombo); } catch { }
+            try { ci.DealtDamage = ReadDamage(player, cm, cfg, combo, inCombo); } catch { }
+        }
+
+        /// <summary>
+        /// 读取「这张牌此刻实际会造成多少伤害」。
+        /// 直接调用游戏自己的 DamageEffect.GetDamageDescriptionValue：
+        /// 它已经把英雄、遗物（如伤害翻倍）、力量、连击倍率等全部算进去了，
+        /// 因此比读静态卡牌配置更准确，也能自动适配“200 → 400”这类增益。
+        /// 返回 -1 表示不是伤害牌或未取到。
+        /// </summary>
+        private static int ReadDamage(PlayerModel player, CardModel cm, GameCardConfig cfg, int combo, bool inCombo)
+        {
+            if (player == null || cm == null || cfg == null) return -1;
+            double total = 0;
+            bool found = false;
+            try
+            {
+                var arr = cfg.onPlayEffect;
+                if (arr == null) return -1;
+                int mult = combo < 1 ? 1 : combo;
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    var e = arr[i];
+                    if (e == null) continue;
+                    var de = e.TryCast<DamageEffect>();
+                    if (de == null) continue;
+                    try
+                    {
+                        double v = de.GetDamageDescriptionValue(player, cm, mult, true, inCombo);
+                        if (v > 0.5)
+                        {
+                            total += v;
+                            found = true;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return found ? (int)Math.Round(total) : -1;
         }
 
         /// <summary>
@@ -605,7 +796,7 @@ namespace VcAdvisor
         /// （GainManaEqualToCostEffect，打出后净消耗为 0，必须计入回蓝连锁）。
         /// 只读，任何异常一律按 0 处理（不影响主流程）。
         /// </summary>
-        private static int ReadManaGain(GameCardConfig cfg, int cost)
+        private static int ReadManaGain(CardModel cm, PlayerModel player, GameCardConfig cfg, int cost, bool inCombo)
         {
             if (cfg == null) return 0;
             int gain = 0;
@@ -622,7 +813,12 @@ namespace VcAdvisor
                         var gm = e.TryCast<GainManaEffect>();
                         if (gm != null)
                         {
-                            try { gain += gm._gainAmount; } catch { }
+                            // 用游戏自己的计算：它会算上连击倍率（配置 3、连击 x4 → 实际 12）
+                            int v = 0;
+                            bool ok = false;
+                            try { v = gm.GetModifiedEffectAmount(cm, player, inCombo); ok = true; } catch { }
+                            if (!ok) { try { v = gm._gainAmount; } catch { } }
+                            if (v > 0) gain += v;
                             continue;
                         }
                         if (e.TryCast<GainManaEqualToCostEffect>() != null) gain += cost;
