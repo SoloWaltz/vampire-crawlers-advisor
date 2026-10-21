@@ -24,6 +24,7 @@ namespace VcAdvisor
             public int IconColor = -1;// 图标颜色；-1 = 跟随文本颜色
             public int Rank;          // >0 时在图标位置画序号徽章
             public bool Hero;         // 首推：大字号 + 整行高亮底
+            public bool Card;         // 圆角卡片底（普通出牌条目）
         }
 
         /// <summary>把 RGB 组装成 GDI 的 COLORREF（0x00BBGGRR）。</summary>
@@ -62,9 +63,16 @@ namespace VcAdvisor
 
         // —— GDI 资源缓存（避免每次重绘都新建/销毁画刷，拖动时明显更顺）——
         private static readonly Dictionary<int, IntPtr> _brushes = new Dictionary<int, IntPtr>();
+        private static readonly Dictionary<int, IntPtr> _pens = new Dictionary<int, IntPtr>();
         private static IntPtr _memDC = IntPtr.Zero;
         private static IntPtr _memBmp = IntPtr.Zero;
         private static int _memW, _memH;
+
+        // —— 鼠标悬停 / 滚轮 ——
+        private static int _hoverRow = -1;
+        private static int _scrollY;
+        private static int _maxScroll;
+        private static IntPtr _hArrow, _hSize;
 
         private static readonly List<Row> _paint = new List<Row>();
         private static readonly List<int> _rowTop = new List<int>();
@@ -89,6 +97,8 @@ namespace VcAdvisor
         private const int WM_PAINT = 0x000F;
         private const int WM_ERASEBKGND = 0x0014;
         private const int WM_MOUSEACTIVATE = 0x0021;
+        private const int WM_SETCURSOR = 0x0020;
+        private const int WM_MOUSEWHEEL = 0x020A;
         private const int WM_NCHITTEST = 0x0084;
         private const int WM_LBUTTONDOWN = 0x0201;
         private const int WM_MOUSEMOVE = 0x0200;
@@ -157,7 +167,10 @@ namespace VcAdvisor
         private const int C_BG = 0x180E12;         // RGB(18,14,24)   深夜紫黑
         private const int C_TITLEBAR = 0x281826;   // RGB(38,24,40)   紫黑标题栏
         private const int C_CARD = 0x2A1A22;       // RGB(34,26,42)   普通条目底
+        private const int C_CARD_HOVER = 0x3A2630; // RGB(48,38,58)   悬停条目底
         private const int C_CARD_HERO = 0x241E38;  // RGB(56,30,36)   首推卡片底（暗红棕）
+        private const int C_SCROLL_TRACK = 0x22181E; // RGB(30,24,34)
+        private const int C_SCROLL = 0x364A5A;     // RGB(90,74,54)   滚动条
         private const int C_GOLD = 0x5CB8E0;       // RGB(224,184,92) 金色
         private const int C_BTN = 0x2A1A22;        // RGB(34,26,42)
         private const int C_BTN_HOT = 0x3A2C4E;    // RGB(78,44,58)
@@ -352,6 +365,24 @@ namespace VcAdvisor
         [DllImport("gdi32.dll")]
         private static extern bool Polygon(IntPtr hdc, POINT[] points, int count);
 
+        [DllImport("gdi32.dll")]
+        private static extern bool RoundRect(IntPtr hdc, int left, int top, int right, int bottom, int width, int height);
+
+        [DllImport("gdi32.dll")]
+        private static extern int IntersectClipRect(IntPtr hdc, int left, int top, int right, int bottom);
+
+        [DllImport("gdi32.dll")]
+        private static extern int SaveDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool RestoreDC(IntPtr hdc, int savedDC);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr LoadCursorW(IntPtr hInstance, IntPtr lpCursorName);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetCursor(IntPtr hCursor);
+
         [DllImport("user32.dll")]
         private static extern int GetSystemMetrics(int nIndex);
 
@@ -437,6 +468,10 @@ namespace VcAdvisor
             {
                 _wndProc = WndProc;
                 _enumProc = EnumProc;
+                // 显式指定光标：否则窗口类没有光标，WM_SETCURSOR 默认不处理，
+                // 会一直沿用游戏设置的“忙碌/等待”光标，表现为鼠标移到面板上一直转圈。
+                _hArrow = LoadCursorW(IntPtr.Zero, new IntPtr(32512));   // IDC_ARROW
+                _hSize = LoadCursorW(IntPtr.Zero, new IntPtr(32642));    // IDC_SIZENWSE
 
                 WNDCLASSEXW wc = new WNDCLASSEXW();
                 wc.cbSize = (uint)Marshal.SizeOf(typeof(WNDCLASSEXW));
@@ -444,6 +479,7 @@ namespace VcAdvisor
                 wc.lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProc);
                 wc.hInstance = Process.GetCurrentProcess().Handle;
                 wc.hbrBackground = IntPtr.Zero;
+                wc.hCursor = _hArrow;
                 wc.lpszClassName = CLASS_NAME;
                 ushort atom = RegisterClassExW(ref wc);
                 if (atom == 0)
@@ -789,7 +825,7 @@ namespace VcAdvisor
                 _rowTop.Clear();
                 _rowH.Clear();
 
-                int y = PAD + TITLE_H + 4;
+                int y = 1 + TITLE_H + PAD;
                 if (!_collapsed)
                 {
                     for (int i = 0; i < _paint.Count; i++)
@@ -804,17 +840,22 @@ namespace VcAdvisor
                         }
                         int w = innerW - row.Indent;
                         if (row.Rank > 0 || row.Icon >= 0) w -= 38;
+                        if (row.Hero) w -= 20;
                         if (w < 40) w = 40;
                         int h = Measure(dc, row.Text, w, FontOf(row.Kind));
                         if (row.Hero) h += 18;      // 首推卡片：上下留白
+                        if (row.Card) h += 8;
                         _rowH.Add(h);
-                        y += h + 1;
+                        y += h + 3;
                     }
                 }
                 ReleaseDC(hWnd, dc);
 
-                int totalH = y + PAD;
-                if (totalH < PAD * 2 + TITLE_H) totalH = PAD * 2 + TITLE_H;
+                int contentTop = 1 + TITLE_H + PAD;
+                int contentBottom = y;
+                int minH = 1 + TITLE_H + PAD * 2;
+                int totalH = contentBottom + PAD;
+                if (totalH < minH) totalH = minH;
 
                 // 高度上限：不允许超出屏幕底部（否则出牌计划会被截掉）
                 RECT wr0;
@@ -824,6 +865,19 @@ namespace VcAdvisor
                 if (totalH > maxH) totalH = maxH;
 
                 _height = totalH;
+
+                // 内容超出可视区时启用滚轮滚动
+                int viewH = _height - contentTop - PAD;
+                int contentH = contentBottom - contentTop;
+                if (viewH < 40) viewH = 40;
+                _maxScroll = contentH - viewH;
+                if (_maxScroll < 0) _maxScroll = 0;
+                if (_scrollY > _maxScroll) _scrollY = _maxScroll;
+                if (_scrollY < 0) _scrollY = 0;
+                if (_scrollY > 0)
+                {
+                    for (int i = 0; i < _rowTop.Count; i++) _rowTop[i] -= _scrollY;
+                }
 
                 RECT wr;
                 GetWindowRect(hWnd, out wr);
@@ -950,6 +1004,8 @@ namespace VcAdvisor
             {
                 foreach (var kv in _brushes) { if (kv.Value != IntPtr.Zero) DeleteObject(kv.Value); }
                 _brushes.Clear();
+                foreach (var kv in _pens) { if (kv.Value != IntPtr.Zero) DeleteObject(kv.Value); }
+                _pens.Clear();
             }
             catch { }
         }
@@ -985,49 +1041,79 @@ namespace VcAdvisor
             if (!_collapsed)
             {
                 int innerW = cw - PAD * 2;
+                int saved = SaveDC(dc);
+                try { IntersectClipRect(dc, 1, 1 + TITLE_H, cw - 1, ch - 1); } catch { }
+
                 for (int i = 0; i < _paint.Count && i < _rowTop.Count; i++)
                 {
                     var row = _paint[i];
                     int ry = _rowTop[i];
                     int rh = _rowH[i];
 
-                    if (!string.IsNullOrEmpty(row.Text))
+                    if (ry + rh < 1 + TITLE_H || ry > ch) continue;   // 不在可视区
+                    if (string.IsNullOrEmpty(row.Text)) continue;
+
+                    bool hover = i == _hoverRow;
+                    int baseX = PAD + row.Indent;
+                    int textX = baseX;
+                    int textY = ry;
+                    int textH = rh;
+
+                    RECT band = new RECT { left = PAD - 4, top = ry - 2, right = cw - PAD + 2, bottom = ry + rh };
+
+                    if (row.Hero)
                     {
-                        int baseX = PAD + row.Indent;
-                        int textX = baseX;
-                        int textY = ry;
-                        int textH = rh;
-
-                        if (row.Hero)
-                        {
-                            // 首推：整行高亮底 + 金色大箭头 + 21px 大字
-                            RECT band = new RECT { left = PAD - 4, top = ry - 2, right = cw - PAD + 4, bottom = ry + rh };
-                            FillR(dc, band, C_CARD_HERO);
-                            DrawArrow(dc, baseX, ry + rh / 2 - 6, 12, C_GOLD);
-                            textX += 20;
-                            textY += 8;
-                            textH -= 8;
-                        }
-                        else if (row.Rank > 0 || row.Icon >= 0)
-                        {
-                            if (row.Rank > 0)
-                            {
-                                DrawBadge(dc, row.Rank, baseX, ry + 2, 18,
-                                    row.Rank == 1 ? C_GOLD : C_TEXT_SUB);
-                                textX += 22;
-                            }
-                            if (row.Icon >= 0)
-                            {
-                                DrawRoleIcon(dc, row.Icon, textX, ry + 3, 14,
-                                    row.IconColor >= 0 ? row.IconColor : C_TEXT_SUB);
-                                textX += 18;
-                            }
-                        }
-
-                        DrawT(dc, row.Text, textX, textY, innerW - (textX - PAD), textH,
-                            FontOf(row.Kind), ColorOf(row.Kind));
+                        // 首推：圆角高亮卡片 + 金色大箭头 + 21px 大字
+                        FillRound(dc, band, C_CARD_HERO, 12);
+                        DrawArrow(dc, baseX, ry + rh / 2 - 6, 12, C_GOLD);
+                        textX += 20;
+                        textY += 8;
+                        textH -= 8;
                     }
+                    else if (row.Card)
+                    {
+                        // 普通出牌条目：圆角卡片，悬停变亮
+                        FillRound(dc, band, hover ? C_CARD_HOVER : C_CARD, 9);
+                        textY += 4;
+                        textH -= 4;
+                    }
+                    else if (hover)
+                    {
+                        FillRound(dc, band, C_CARD, 8);
+                    }
+
+                    if (row.Rank > 0)
+                    {
+                        DrawBadge(dc, row.Rank, baseX, ry + 2, 18,
+                            row.Rank == 1 ? C_GOLD : C_TEXT_SUB);
+                        textX += 22;
+                    }
+                    if (row.Icon >= 0)
+                    {
+                        DrawRoleIcon(dc, row.Icon, textX, ry + 4, 14,
+                            row.IconColor >= 0 ? row.IconColor : C_TEXT_SUB);
+                        textX += 18;
+                    }
+
+                    DrawT(dc, row.Text, textX, textY, innerW - (textX - PAD), textH,
+                        FontOf(row.Kind), ColorOf(row.Kind));
                 }
+
+                // 滚动条：内容超出可视区时出现（只做导航，不表达任何数值）
+                if (_maxScroll > 0)
+                {
+                    RECT track = new RECT { left = cw - 7, top = 1 + TITLE_H + 4, right = cw - 3, bottom = ch - 6 };
+                    FillRound(dc, track, C_SCROLL_TRACK, 4);
+                    int viewH = ch - (1 + TITLE_H) - PAD;
+                    int total = viewH + _maxScroll;
+                    int thumbH = total > 0 ? Math.Max(24, viewH * viewH / total) : 24;
+                    int travel = (track.bottom - track.top) - thumbH;
+                    int pos = _maxScroll > 0 ? travel * _scrollY / _maxScroll : 0;
+                    RECT thumb = new RECT { left = track.left, top = track.top + pos, right = track.right, bottom = track.top + pos + thumbH };
+                    FillRound(dc, thumb, C_SCROLL, 4);
+                }
+
+                try { RestoreDC(dc, saved); } catch { }
             }
 
             // 右下角缩放提示
@@ -1074,18 +1160,39 @@ namespace VcAdvisor
             return br;
         }
 
+        private static IntPtr Pen(int color)
+        {
+            IntPtr pen;
+            if (_pens.TryGetValue(color, out pen) && pen != IntPtr.Zero) return pen;
+            pen = CreatePen(0, 1, color);
+            if (pen != IntPtr.Zero) _pens[color] = pen;
+            return pen;
+        }
+
+        /// <summary>圆角填充（笔与刷同色，等价于无边框圆角色块）。</summary>
+        private static void FillRound(IntPtr dc, RECT r, int color, int radius)
+        {
+            IntPtr br = Brush(color);
+            if (br == IntPtr.Zero) return;
+            IntPtr pen = Pen(color);
+            IntPtr ob = SelectObject(dc, br);
+            IntPtr op = pen != IntPtr.Zero ? SelectObject(dc, pen) : IntPtr.Zero;
+            try { RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius); } catch { }
+            if (op != IntPtr.Zero) SelectObject(dc, op);
+            SelectObject(dc, ob);
+        }
+
         /// <summary>用同一颜色填充椭圆（笔与刷同色，等价于无边框色块）。</summary>
         private static void FillEllipse(IntPtr dc, int x, int y, int w, int h, int color)
         {
             IntPtr br = Brush(color);
             if (br == IntPtr.Zero) return;
-            IntPtr pen = CreatePen(0, 1, color);
+            IntPtr pen = Pen(color);
             IntPtr ob = SelectObject(dc, br);
             IntPtr op = pen != IntPtr.Zero ? SelectObject(dc, pen) : IntPtr.Zero;
             try { Ellipse(dc, x, y, x + w, y + h); } catch { }
             if (op != IntPtr.Zero) SelectObject(dc, op);
             SelectObject(dc, ob);
-            if (pen != IntPtr.Zero) DeleteObject(pen);
         }
 
         private static void FillPoly(IntPtr dc, POINT[] pts, int color)
@@ -1093,13 +1200,12 @@ namespace VcAdvisor
             if (pts == null || pts.Length < 3) return;
             IntPtr br = Brush(color);
             if (br == IntPtr.Zero) return;
-            IntPtr pen = CreatePen(0, 1, color);
+            IntPtr pen = Pen(color);
             IntPtr ob = SelectObject(dc, br);
             IntPtr op = pen != IntPtr.Zero ? SelectObject(dc, pen) : IntPtr.Zero;
             try { Polygon(dc, pts, pts.Length); } catch { }
             if (op != IntPtr.Zero) SelectObject(dc, op);
             SelectObject(dc, ob);
-            if (pen != IntPtr.Zero) DeleteObject(pen);
         }
 
         /// <summary>首推行前的金色三角箭头。</summary>
@@ -1230,7 +1336,7 @@ namespace VcAdvisor
         private static void DrawBtn(IntPtr dc, RECT r, string label, int id)
         {
             bool hot = _hotBtn == id;
-            FillR(dc, r, hot ? C_BTN_HOT : C_BTN);
+            FillRound(dc, r, hot ? C_BTN_HOT : C_BTN, 6);
             DrawTextCentered(dc, label, r, _fBtn, hot ? C_GOLD : C_TEXT_TITLE);
         }
 
@@ -1315,6 +1421,13 @@ namespace VcAdvisor
                             return new IntPtr(HTCLIENT);
                         }
 
+                    case WM_SETCURSOR:
+                        {
+                            int ht = (int)(lParam.ToInt64() & 0xFFFF);
+                            try { SetCursor(ht == HTBOTTOMRIGHT ? _hSize : _hArrow); } catch { }
+                            return new IntPtr(1);   // TRUE：阻止默认处理，避免继承游戏的等待光标
+                        }
+
                     case WM_LBUTTONDOWN:
                         {
                             POINT p = MouseClientPoint(lParam);
@@ -1364,14 +1477,45 @@ namespace VcAdvisor
                                 };
                                 TrackMouseEvent(ref tme);
                             }
+
+                            // 行悬停高亮：让鼠标经过的条目有轻微反馈
+                            int hover = -1;
+                            if (!_collapsed)
+                            {
+                                for (int i = 0; i < _rowTop.Count; i++)
+                                {
+                                    if (p.y >= _rowTop[i] && p.y < _rowTop[i] + _rowH[i]) { hover = i; break; }
+                                }
+                            }
+                            if (hover != _hoverRow)
+                            {
+                                _hoverRow = hover;
+                                InvalidateRect(hWnd, IntPtr.Zero, false);
+                            }
+                            return IntPtr.Zero;
+                        }
+
+                    case WM_MOUSEWHEEL:
+                        {
+                            int delta = (int)((wParam.ToInt64() >> 16) & 0xFFFF);
+                            if (delta > 32767) delta -= 65536;
+                            if (delta != 0 && _maxScroll > 0)
+                            {
+                                _scrollY -= (delta / 120) * 48;
+                                if (_scrollY < 0) _scrollY = 0;
+                                if (_scrollY > _maxScroll) _scrollY = _maxScroll;
+                                Layout(hWnd);
+                                InvalidateRect(hWnd, IntPtr.Zero, false);
+                            }
                             return IntPtr.Zero;
                         }
 
                     case WM_MOUSELEAVE:
                         _trackingMouse = false;
-                        if (_hotBtn != 0)
+                        if (_hotBtn != 0 || _hoverRow != -1)
                         {
                             _hotBtn = 0;
+                            _hoverRow = -1;
                             InvalidateRect(hWnd, IntPtr.Zero, false);
                         }
                         return IntPtr.Zero;
