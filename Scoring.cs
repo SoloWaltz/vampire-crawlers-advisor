@@ -134,7 +134,7 @@ namespace VcAdvisor
                     if (s.Combo > 1) { score += 8; c.Reasons.Add(string.Format("连击 x{0}，攻击收益放大", s.Combo)); }
                 }
 
-                if (s.Turn <= 1 && (role == CardRole.Passive || role == CardRole.Economy))
+                if (s.TurnEffective <= 1 && (role == CardRole.Passive || role == CardRole.Economy))
                 {
                     score += 12;
                     c.Reasons.Add("开局第 1 回合，优先铺场");
