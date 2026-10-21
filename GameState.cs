@@ -49,6 +49,13 @@ namespace VcAdvisor
         public bool Targetable = true;
         public int Freeze;
         public int IncomingDamage;                    // 本回合对玩家造成的预计伤害
+        public double ProjectedHp = -1;               // 游戏预测的结算后血量（含护甲/减伤）
+        public double ProjectedArmor = -1;            // 游戏预测的结算后护甲
+        public bool Frozen;
+        public int KnockbackRes;
+        public int DisarmRes;
+        public int FreezeRes;
+        public int Phase;                             // 多阶段 Boss 的当前阶段
         public List<string> Intents = new List<string>();
     }
 
@@ -92,6 +99,10 @@ namespace VcAdvisor
         public float HpMax = -1f;      // 游戏给出的生命上限（SimpleStat.GetMaxValue）；-1 = 未取到
         public float ManaMax = -1f;    // 游戏给出的法力上限；-1 = 未取到
         public float Armor = -1f;
+        public int Coins = -1;          // 金币
+        public int PlayerLevel = -1;    // 等级
+        public int PlayerXp = -1;       // 当前经验
+        public int MaxXp = -1;          // 升级所需经验
 
         public List<CardInfo> Hand = new List<CardInfo>();
 
@@ -100,6 +111,7 @@ namespace VcAdvisor
         public int DestroyCount;
         public int ComboPileCount;
         public List<KeyValuePair<string, int>> DrawComposition = new List<KeyValuePair<string, int>>();
+        public List<string> DrawOrder = new List<string>();   // 抽牌堆顺序（前 8 张，index 0 = 下一张）
 
         public bool HasEnemy;
         public float EnemyHp;
@@ -207,6 +219,10 @@ namespace VcAdvisor
                         // 上限由游戏自己给出，比跨局累计的峰值更适合做比例分母（进度条）
                         try { if (st.Health != null) s.HpMax = st.Health.GetMaxValue(); } catch { }
                         try { if (st.Mana != null) s.ManaMax = st.Mana.GetMaxValue(); } catch { }
+                        try { s.Coins = player.CurrentCoinCount; } catch { }
+                        try { s.PlayerLevel = player.PlayerLevel; } catch { }
+                        try { s.PlayerXp = player.PlayerXp; } catch { }
+                        try { s.MaxXp = player.MaxXp; } catch { }
                         DiagStatsOnce(st, s);
                     }
                 }
@@ -274,6 +290,7 @@ namespace VcAdvisor
                         {
                             var ci = ReadCard(dcards[i], player, s.Combo);
                             if (ci == null) continue;
+                            if (s.DrawOrder.Count < 8) s.DrawOrder.Add(ci.Name);   // 抽牌堆顺序（index 0 = 下一张）
                             int c;
                             dict.TryGetValue(ci.Name, out c);
                             dict[ci.Name] = c + 1;
@@ -522,6 +539,8 @@ namespace VcAdvisor
 
             if (string.IsNullOrEmpty(name)) { try { name = cfg.Name; } catch { } }
             if (string.IsNullOrEmpty(name)) { try { name = cfg.AssetId; } catch { } }
+            // 本地化缺失时上面会得到英文名，这里再用 Wiki 中文名表补一次
+            name = WikiData.ArcanaNameZh(name);
             if (!string.IsNullOrEmpty(name) && !s.Arcanas.Contains(name)) s.Arcanas.Add(name);
         }
 
@@ -599,6 +618,13 @@ namespace VcAdvisor
                 try { info.Dead = em.IsDead; } catch { }
                 try { info.Targetable = em.IsTargetable; } catch { }
                 try { info.Freeze = em.FreezeStacks; } catch { }
+                try { info.ProjectedHp = em.ProjectedHealth; } catch { }
+                try { info.ProjectedArmor = em.ProjectedArmor; } catch { }
+                try { info.Frozen = em.IsFrozen; } catch { }
+                try { info.KnockbackRes = em.KnockbackResistance; } catch { }
+                try { info.DisarmRes = em.DisarmResistance; } catch { }
+                try { info.FreezeRes = em.FreezeResistance; } catch { }
+                try { info.Phase = em.CurrentPhaseIndex; } catch { }
 
                 // 意图 → 每条的预计伤害
                 try

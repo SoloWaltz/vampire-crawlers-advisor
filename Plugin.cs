@@ -14,7 +14,7 @@ namespace VcAdvisor
         public const string PluginGuid = "vampirecrawlers.advisor";
         public const string PluginName = "Vampire Crawlers 打牌助手";
         // 版本规则：每次内容新增或修改，次版本号 +0.1（1.0.0 → 1.1.0 → 1.2.0 …）
-        public const string PluginVersion = "1.5.0";
+        public const string PluginVersion = "1.6.0";
 
         internal static ManualLogSource Logger;
 
@@ -412,6 +412,26 @@ namespace VcAdvisor
                     if (g.Dmg > 0) sb.Append("   ⚔造成伤害");
                     Add(rows, sb.ToString(), 2);
 
+                    // 游戏自带的结算预测（含护甲/减伤/冻结），仅在取到且与本回合出手相关时显示
+                    if (g.HasProjection)
+                    {
+                        var pj = new StringBuilder("     预测：HP ").Append(g.ProjectedHp.ToString("0"));
+                        if (g.ProjectedArmor >= 0) pj.Append(" · 甲 ").Append(g.ProjectedArmor.ToString("0"));
+                        if (g.FrozenCount > 0) pj.Append(" · 冻结 ×").Append(g.FrozenCount);
+                        if (g.Phase > 0) pj.Append(" · 阶段 ").Append(g.Phase + 1);
+                        var pr = Add(rows, pj.ToString(), 4);
+                        pr.Indent = 6;
+                    }
+                    if (g.KnockbackRes > 0 || g.DisarmRes > 0 || g.FreezeRes > 0)
+                    {
+                        var rs = new StringBuilder("     抗性：");
+                        if (g.KnockbackRes > 0) rs.Append("击退 ").Append(g.KnockbackRes).Append(" ");
+                        if (g.DisarmRes > 0) rs.Append("缴械 ").Append(g.DisarmRes).Append(" ");
+                        if (g.FreezeRes > 0) rs.Append("冻结 ").Append(g.FreezeRes);
+                        var rr = Add(rows, rs.ToString(), 4);
+                        rr.Indent = 6;
+                    }
+
                     var it = new StringBuilder();
                     foreach (var kv in g.Intents)
                     {
@@ -447,10 +467,33 @@ namespace VcAdvisor
                     R(rows, string.Format("     … 另有 {0} 类牌", s.DrawComposition.Count - m), 4);
             }
 
+            // 抽牌堆顶顺序（index 0 = 下一张要抽的牌），只显示前几张
+            if (s.DrawOrder.Count > 0)
+            {
+                int m = Math.Min(adv ? 8 : 5, s.DrawOrder.Count);
+                var order = new StringBuilder();
+                for (int i = 0; i < m; i++)
+                {
+                    if (i > 0) order.Append(" → ");
+                    order.Append(s.DrawOrder[i]);
+                }
+                R(rows, "下抽：" + order, 1);
+            }
+
             TagRows(rows, deckStart, 2);
 
             // —— ⑤ 资料页：英雄技能 / 奥术 / 属性 ——
             int infoStart = rows.Count;
+
+            if (s.PlayerLevel >= 0 || s.Coins >= 0)
+            {
+                var lv = new StringBuilder();
+                if (s.PlayerLevel >= 0) lv.Append("等级 ").Append(s.PlayerLevel);
+                if (s.PlayerXp >= 0 && s.MaxXp > 0) lv.Append("  (XP ").Append(s.PlayerXp).Append('/').Append(s.MaxXp).Append(')');
+                if (s.Coins >= 0) lv.Append("  ·  金币 ").Append(s.Coins);
+                R(rows, "角色：" + lv, 1);
+            }
+
             if (adv && s.HeroSkills.Count > 0)
             {
                 R(rows, "英雄技能", 1);
@@ -515,6 +558,11 @@ namespace VcAdvisor
             public string Name;
             public int Count;
             public float Hp, HpMax, Armor;
+            public double ProjectedHp, ProjectedArmor;
+            public bool HasProjection;
+            public int FrozenCount;
+            public int KnockbackRes, DisarmRes, FreezeRes;
+            public int Phase;
             public int Dmg;
             public List<KeyValuePair<string, int>> Intents = new List<KeyValuePair<string, int>>();
         }
@@ -537,6 +585,13 @@ namespace VcAdvisor
                 g.Hp += e.Hp;
                 g.HpMax += e.HpMax;
                 g.Armor += e.Armor;
+                if (e.ProjectedHp >= 0) { g.ProjectedHp += e.ProjectedHp; g.HasProjection = true; }
+                if (e.ProjectedArmor >= 0) g.ProjectedArmor += e.ProjectedArmor;
+                if (e.Frozen) g.FrozenCount++;
+                if (e.KnockbackRes > g.KnockbackRes) g.KnockbackRes = e.KnockbackRes;
+                if (e.DisarmRes > g.DisarmRes) g.DisarmRes = e.DisarmRes;
+                if (e.FreezeRes > g.FreezeRes) g.FreezeRes = e.FreezeRes;
+                if (e.Phase > g.Phase) g.Phase = e.Phase;
                 g.Dmg += e.IncomingDamage;
                 foreach (var it in e.Intents)
                 {
@@ -702,6 +757,7 @@ namespace VcAdvisor
                 sig.Append(s.TurnEffective).Append('|');
                 foreach (var e in s.Enemies)
                     sig.Append(e.Name).Append(':').Append(e.Hp.ToString("0")).Append(':')
+                       .Append(e.ProjectedHp.ToString("0")).Append(':')
                        .Append(e.IncomingDamage).Append(':').Append(string.Join(",", e.Intents.ToArray())).Append(';');
                 foreach (var st in s.Stats) sig.Append(st.Name).Append(st.Value.ToString("0.#")).Append(',');
                 string key = sig.ToString();
@@ -717,6 +773,13 @@ namespace VcAdvisor
                     sb.Append(e.Name).Append(" HP ").Append(e.Hp.ToString("0")).Append('/').Append(e.HpMax.ToString("0"));
                     if (e.Armor > 0.5f) sb.Append(" 甲").Append(e.Armor.ToString("0"));
                     if (e.Freeze > 0) sb.Append(" 冻结").Append(e.Freeze);
+                    if (e.ProjectedHp >= 0) sb.Append(" 预测剩").Append(e.ProjectedHp.ToString("0"));
+                    if (e.Frozen) sb.Append(" 已冻");
+                    if (e.Phase > 0) sb.Append(" 阶段").Append(e.Phase + 1);
+                    if (e.KnockbackRes > 0 || e.DisarmRes > 0 || e.FreezeRes > 0)
+                        sb.Append(" 抗性(击退").Append(e.KnockbackRes)
+                          .Append("/缴械").Append(e.DisarmRes)
+                          .Append("/冻结").Append(e.FreezeRes).Append(')');
                     sb.Append(" [").Append(string.Join(" / ", e.Intents.ToArray())).Append("] ");
                 }
                 sb.Append("｜我方增益：");

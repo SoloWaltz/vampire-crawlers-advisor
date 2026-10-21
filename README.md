@@ -3,7 +3,7 @@
 《Vampire Crawlers（吸血鬼爬行者）》的单机打牌辅助工具：**只读**读取游戏运行时状态，实时给出本回合出牌顺序建议。
 
 - 插件 GUID：`vampirecrawlers.advisor`
-- 当前版本：**1.5.0**
+- 当前版本：**1.6.0**
 - 形态：BepInEx 6（IL2CPP / x64）插件 + 独立置顶伴侣窗口（Win32 + GDI 自绘）
 
 ---
@@ -14,6 +14,8 @@
 
 - 读取当前法力、生命、护甲、连击数、连击阶梯、手牌、费用、回蓝、运行时伤害
 - 读取每只敌人的血量、护甲、本回合意图与预计伤害
+- 读取游戏自带的结算预测（结算后血量 / 护甲 / 冻结 / 多阶段）与各类控制抗性
+- 读取抽牌堆顶顺序、金币、等级与经验进度
 - 读取我方全部增益 / 减益状态、英雄组合与已激活奥术
 - 结合以上信息计算出一个可执行的出牌序列，并显示每张牌的评分与理由
 - 把每局战斗记录到本地，并用**本地案例库**从历史局面中学习
@@ -107,9 +109,10 @@
 
 - 通过 **BepInEx 6（IL2CPP / x64）** 加载进游戏进程
 - 用 **Il2CppInterop** 读取 `Nosebleed.Pancake.*` 命名空间下的运行时对象，例如：
-  - `PlayerModel`：生命、法力、护甲、连击、回合、手牌、牌堆、出牌历史
+  - `PlayerModel`：生命、法力、护甲、连击、回合、手牌、牌堆、出牌历史、金币、等级、经验
   - `CardModel` / `CardConfig`：卡牌名称、费用修正、效果、碎裂状态
-  - `EnemyEncounterModel` / `EnemyModel`：敌人血量、护甲、当前意图与预计伤害
+  - `CardPileModel`：抽牌堆顺序（下一张 → 后面几张）
+  - `EnemyEncounterModel` / `EnemyModel`：敌人血量、护甲、当前意图与预计伤害、结算预测、冻结与抗性
   - `PlayerStats`：力量、成长、贪婪、诅咒等增益 / 减益
   - `FccPortraits` / `ArcanaModel`：英雄组合与已激活奥术
   - `Unity.Localization`：卡牌名称直接取游戏本地化文本，保证与界面逐字一致
@@ -123,7 +126,7 @@
 | `BepInEx/VcAdvisorLogs/battles-YYYYMMDD.jsonl` | 原始对局日志，永久保留 |
 | `BepInEx/VcAdvisorLogs/cases-v2.tsv` | 派生案例库（schema 3），可删除后自动重建 |
 
-日志包含 `schema`、`gameVersion` 与归一化特征字段（`hpRatio` / `manaRatio` / `incomingRatio` / `costRatio` / `dmgRatio` / `heroSkills` / `evoReady` / `evoNear` / `build` / `buildMatch`），便于跨版本筛选与降权。
+日志包含 `schema`、`gameVersion` 与归一化特征字段（`hpRatio` / `manaRatio` / `incomingRatio` / `costRatio` / `dmgRatio` / `heroSkills` / `evoReady` / `evoNear` / `build` / `buildMatch` / `drawOrder` / 敌人 `projHp` / `level` / `coins`），便于跨版本筛选与降权。
 
 插件**不会自动上传任何数据**；所有文件均保存在本机。
 
@@ -144,7 +147,7 @@
 1. 为游戏安装 BepInEx 6 IL2CPP x64 并启动一次。
 2. 退出游戏。
 3. 把 `VcAdvisor.dll` 放入 `<游戏目录>/BepInEx/plugins/`。
-4. 重新启动游戏，日志出现 `Vampire Crawlers 打牌助手 v1.5.0 已加载` 即成功。
+4. 重新启动游戏，日志出现 `Vampire Crawlers 打牌助手 v1.6.0 已加载` 即成功。
 
 ### 快捷键
 
@@ -225,6 +228,7 @@ Copy-Item .\bin\Release\VcAdvisor.dll "<游戏目录>\BepInEx\plugins\VcAdvisor.
 
 | 版本 | 内容 |
 |---|---|
+| **1.6.0** | 逆向增量：新增抽牌堆顶顺序（`CardPileModel._cards`）、敌人结算预测血量/护甲/冻结/阶段与控制抗性、玩家金币/等级/经验；上述数据分别显示在「牌库 / 敌情 / 资料」页并写入日志；奥术名称自动转中文，修复资料栏英文未翻译 |
 | **1.5.0** | 伴侣窗口新增「出牌 / 敌情 / 牌库 / 资料」四个标签页，大幅降低同屏信息量；新增 Wiki 流派匹配（4 套构筑），流派核心卡评分 +7；日志新增 `build` / `buildMatch` |
 | 1.4.0 | 内嵌 Wiki 资料（22 角色技能、86 卡牌描述、12 奥术、58 宝石、17 进化配方、40 关键词）；界面展示英雄技能与首推卡说明；案例库新增阵容签名与进化配方特征（schema 3） |
 | 1.3.0 | 新增本地案例库（局面 → 出牌 → 即时结果）、相似案例检索与界面提示；日志加入 `schema` / `gameVersion` / 归一化特征；新增预测与实际偏差检测 |

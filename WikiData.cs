@@ -59,6 +59,7 @@ namespace VcAdvisor
         private static readonly Dictionary<string, WikiChar> _chars = new Dictionary<string, WikiChar>(StringComparer.Ordinal);
         private static readonly Dictionary<string, WikiCard> _cards = new Dictionary<string, WikiCard>(StringComparer.Ordinal);
         private static readonly Dictionary<string, string> _arcanas = new Dictionary<string, string>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, string> _arcanaEn = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, string> _gems = new Dictionary<string, string>(StringComparer.Ordinal);
         private static readonly Dictionary<string, string> _effects = new Dictionary<string, string>(StringComparer.Ordinal);
         private static readonly List<Recipe> _recipes = new List<Recipe>();
@@ -123,7 +124,10 @@ namespace VcAdvisor
                                     break;
                                 case "ARCANAS":
                                     if (p.Length >= 3)
+                                    {
                                         _arcanas[p[0]] = p[2];
+                                        if (!string.IsNullOrEmpty(p[1])) _arcanaEn[p[1]] = p[0];
+                                    }
                                     break;
                                 case "GEMS":
                                     if (p.Length >= 2)
@@ -227,6 +231,28 @@ namespace VcAdvisor
             foreach (var kv in _arcanas)
                 if (kv.Key.IndexOf(arcanaName, StringComparison.Ordinal) >= 0) return kv.Value;
             return null;
+        }
+
+        /// <summary>
+        /// 把英文或未翻译的奥术名转换成 Wiki 的中文名。
+        /// 例：Battle Stance → 战斗姿态。
+        /// </summary>
+        public static string ArcanaNameZh(string raw)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(raw)) return raw;
+            if (_arcanas.ContainsKey(raw)) return raw;
+
+            string zh;
+            if (_arcanaEn.TryGetValue(raw, out zh)) return zh;
+
+            foreach (var kv in _arcanaEn)
+            {
+                if (kv.Key.IndexOf(raw, StringComparison.OrdinalIgnoreCase) >= 0
+                    || raw.IndexOf(kv.Key, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return kv.Value;
+            }
+            return raw;
         }
 
         public static string EffectDesc(string effectName)

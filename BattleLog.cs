@@ -357,6 +357,11 @@ namespace VcAdvisor
                   .Append(",\"hp\":").Append(F(e.Hp))
                   .Append(",\"max\":").Append(F(e.HpMax))
                   .Append(",\"armor\":").Append(F(e.Armor))
+                  .Append(",\"projHp\":").Append(F(e.ProjectedHp))
+                  .Append(",\"projArmor\":").Append(F(e.ProjectedArmor))
+                  .Append(",\"frozen\":").Append(e.Frozen ? "true" : "false")
+                  .Append(",\"phase\":").Append(e.Phase)
+                  .Append(",\"res\":[").Append(e.KnockbackRes).Append(',').Append(e.DisarmRes).Append(',').Append(e.FreezeRes).Append(']')
                   .Append(",\"dmg\":").Append(e.IncomingDamage)
                   .Append(",\"intent\":\"").Append(Esc(string.Join(" / ", e.Intents.ToArray()))).Append("\"}");
             }
@@ -378,6 +383,11 @@ namespace VcAdvisor
               .Append(",\"evoNear\":\"").Append(Esc(string.Join(" / ", s.EvoNear.ToArray()))).Append('"')
               .Append(",\"build\":\"").Append(Esc(s.BuildTitle ?? "")).Append('"')
               .Append(",\"buildMatch\":").Append(F(s.BuildMatch))
+              .Append(",\"coins\":").Append(s.Coins)
+              .Append(",\"level\":").Append(s.PlayerLevel)
+              .Append(",\"xp\":").Append(s.PlayerXp)
+              .Append(",\"maxXp\":").Append(s.MaxXp)
+              .Append(",\"drawOrder\":\"").Append(Esc(string.Join(" > ", s.DrawOrder.ToArray()))).Append('"')
               .Append(",\"hand\":[");
             for (int i = 0; i < s.Hand.Count; i++)
             {
@@ -583,9 +593,9 @@ namespace VcAdvisor
             return "\"" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture) + "\"";
         }
 
-        private static string F(float v)
+        private static string F(double v)
         {
-            if (float.IsNaN(v) || float.IsInfinity(v)) return "null";
+            if (double.IsNaN(v) || double.IsInfinity(v)) return "null";
             return v.ToString("0.##", CultureInfo.InvariantCulture);
         }
 
