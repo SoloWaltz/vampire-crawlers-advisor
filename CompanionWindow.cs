@@ -18,8 +18,21 @@ namespace VcAdvisor
         internal sealed class Row
         {
             public string Text = "";
-            public int Kind;          // 0 标题 1 副标题 2 普通 3 高亮 4 提示
+            public int Kind;          // 0 标题 1 副标题 2 普通 3 高亮 4 提示 6 首推大字
             public int Indent;        // 文本左缩进（像素）
+            public int Icon = -1;     // 左侧图标（角色）；-1 = 不画
+            public int IconColor = -1;// 图标颜色；-1 = 跟随文本颜色
+            public int Rank;          // >0 时在图标位置画序号徽章
+            public bool Hero;         // 首推：大字号 + 整行高亮底
+        }
+
+        /// <summary>把 RGB 组装成 GDI 的 COLORREF（0x00BBGGRR）。</summary>
+        public static int Rgb(int r, int g, int b)
+        {
+            if (r < 0) r = 0; else if (r > 255) r = 255;
+            if (g < 0) g = 0; else if (g > 255) g = 255;
+            if (b < 0) b = 0; else if (b > 255) b = 255;
+            return (b << 16) | (g << 8) | r;
         }
 
         // —— 供 Unity 线程读取的状态 ——
@@ -138,17 +151,21 @@ namespace VcAdvisor
         private const int GWL_STYLE = -16;
         private const int GWL_EXSTYLE = -20;
 
-        // —— 配色（GDI COLORREF = 0x00BBGGRR）：朴素中性灰，不做视觉修饰 ——
-        private const int C_BORDER = 0x3C3C3C;     // RGB(60,60,60)  窗口细边框
-        private const int C_BG = 0x181818;         // RGB(24,24,24)  内容底色
-        private const int C_TITLEBAR = 0x262626;   // RGB(38,38,38)  标题栏
-        private const int C_BTN = 0x303030;        // RGB(48,48,48)
-        private const int C_BTN_HOT = 0x464646;    // RGB(70,70,70)  悬停
-        private const int C_TEXT_TITLE = 0xEBEBEB; // RGB(235,235,235)
-        private const int C_TEXT_SUB = 0xAAAAAA;   // RGB(170,170,170)
-        private const int C_TEXT = 0xE1E1E1;       // RGB(225,225,225)
-        private const int C_TEXT_HI = 0xFFFFFF;    // RGB(255,255,255) 高亮（配合粗体）
-        private const int C_TEXT_HINT = 0x8C8C8C;  // RGB(140,140,140)
+        // —— 配色（GDI COLORREF = 0x00BBGGRR）：暗色哥特风，暖金点缀 ——
+        // 注意：不使用进度条 / 色条表达任何数值，只用底色、字体与图标做层次。
+        private const int C_BORDER = 0x2E4A5C;     // RGB(92,74,46)   暗金边框
+        private const int C_BG = 0x180E12;         // RGB(18,14,24)   深夜紫黑
+        private const int C_TITLEBAR = 0x281826;   // RGB(38,24,40)   紫黑标题栏
+        private const int C_CARD = 0x2A1A22;       // RGB(34,26,42)   普通条目底
+        private const int C_CARD_HERO = 0x241E38;  // RGB(56,30,36)   首推卡片底（暗红棕）
+        private const int C_GOLD = 0x5CB8E0;       // RGB(224,184,92) 金色
+        private const int C_BTN = 0x2A1A22;        // RGB(34,26,42)
+        private const int C_BTN_HOT = 0x3A2C4E;    // RGB(78,44,58)
+        private const int C_TEXT_TITLE = 0xCCE8F4; // RGB(244,232,204) 暖白
+        private const int C_TEXT_SUB = 0x96B4C4;   // RGB(196,180,150)
+        private const int C_TEXT = 0xD4E0E6;       // RGB(230,224,212)
+        private const int C_TEXT_HI = 0x78D6FF;    // RGB(255,214,120) 亮金
+        private const int C_TEXT_HINT = 0x828C96;  // RGB(150,140,130)
 
         #endregion
 
@@ -326,6 +343,18 @@ namespace VcAdvisor
         [DllImport("gdi32.dll")]
         private static extern IntPtr CreateSolidBrush(int crColor);
 
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreatePen(int fnPenStyle, int nWidth, int crColor);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool Ellipse(IntPtr hdc, int left, int top, int right, int bottom);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool Polygon(IntPtr hdc, POINT[] points, int count);
+
+        [DllImport("user32.dll")]
+        private static extern int GetSystemMetrics(int nIndex);
+
         [DllImport("user32.dll")]
         private static extern int FillRect(IntPtr hDC, ref RECT lprc, IntPtr hbr);
 
@@ -351,13 +380,13 @@ namespace VcAdvisor
         #endregion
 
         // 字体
-        private static IntPtr _fTitle, _fSub, _fRow, _fHi, _fHint, _fBtn;
+        private static IntPtr _fTitle, _fSub, _fRow, _fHi, _fHint, _fBtn, _fHero, _fNum;
 
         private static WndProcDelegate _wndProc;   // 必须保持引用，防止被 GC
         private static EnumWindowsProc _enumProc;
 
         private const int PAD = 10;
-        private const int TITLE_H = 24;
+        private const int TITLE_H = 36;   // 标题栏留足高度，让标题/按钮/徽记在同一水平中心
         private const int BTN_W = 42;
         private const int BTN_H = 20;
         private const int CLOSE_W = 20;
@@ -493,8 +522,10 @@ namespace VcAdvisor
             _fHi = MakeFont(-14, FW_BOLD);
             _fHint = MakeFont(-12, FW_NORMAL);
             _fBtn = MakeFont(-12, FW_NORMAL);
-            Log(string.Format("字体句柄 标题={0} 副={1} 正文={2} 高亮={3}",
-                _fTitle, _fSub, _fRow, _fHi));
+            _fHero = MakeFont(-21, FW_BOLD);   // 首推大字
+            _fNum = MakeFont(-12, FW_BOLD);    // 序号徽章
+            Log(string.Format("字体句柄 标题={0} 副={1} 正文={2} 高亮={3} 首推={4}",
+                _fTitle, _fSub, _fRow, _fHi, _fHero));
         }
 
         private static IntPtr MakeFont(int h, int weight)
@@ -747,8 +778,8 @@ namespace VcAdvisor
                     }
                 }
 
-                // 标题栏按钮
-                int by = PAD + 2;
+                // 标题栏按钮（与标题文字同一垂直中心）
+                int by = 1 + (TITLE_H - BTN_H) / 2;
                 _btnClose = new RECT { left = cw - PAD - CLOSE_W, top = by, right = cw - PAD, bottom = by + BTN_H };
                 _btnCollapse = new RECT { left = _btnClose.left - 6 - BTN_W, top = by, right = _btnClose.left - 6, bottom = by + BTN_H };
                 _btnAdv = new RECT { left = _btnCollapse.left - 6 - BTN_W, top = by, right = _btnCollapse.left - 6, bottom = by + BTN_H };
@@ -772,8 +803,10 @@ namespace VcAdvisor
                             continue;
                         }
                         int w = innerW - row.Indent;
+                        if (row.Rank > 0 || row.Icon >= 0) w -= 38;
                         if (w < 40) w = 40;
                         int h = Measure(dc, row.Text, w, FontOf(row.Kind));
+                        if (row.Hero) h += 18;      // 首推卡片：上下留白
                         _rowH.Add(h);
                         y += h + 1;
                     }
@@ -782,6 +815,14 @@ namespace VcAdvisor
 
                 int totalH = y + PAD;
                 if (totalH < PAD * 2 + TITLE_H) totalH = PAD * 2 + TITLE_H;
+
+                // 高度上限：不允许超出屏幕底部（否则出牌计划会被截掉）
+                RECT wr0;
+                GetWindowRect(hWnd, out wr0);
+                int maxH = GetSystemMetrics(1) - wr0.top - 24;   // SM_CYSCREEN
+                if (maxH < 240) maxH = 240;
+                if (totalH > maxH) totalH = maxH;
+
                 _height = totalH;
 
                 RECT wr;
@@ -811,6 +852,7 @@ namespace VcAdvisor
                 case 1: return _fSub;
                 case 3: return _fHi;
                 case 4: return _fHint;
+                case 6: return _fHero;
                 default: return _fRow;
             }
         }
@@ -823,6 +865,7 @@ namespace VcAdvisor
                 case 1: return C_TEXT_SUB;
                 case 3: return C_TEXT_HI;
                 case 4: return C_TEXT_HINT;
+                case 6: return C_TEXT_HI;
                 default: return C_TEXT;
             }
         }
@@ -928,9 +971,11 @@ namespace VcAdvisor
             RECT tb = new RECT { left = 1, top = 1, right = cw - 1, bottom = 1 + TITLE_H };
             FillR(dc, tb, C_TITLEBAR);
 
-            // 标题
-            DrawT(dc, _paintTitle + (_collapsed ? "  （已收起）" : ""),
-                PAD, PAD + 4, cw - PAD * 3 - BTN_W * 2 - CLOSE_W - 12, TITLE_H - 4, _fTitle, C_TEXT_TITLE);
+            // 标题（前置金色菱形徽记），与右侧按钮在同一垂直中心
+            DrawRoleIcon(dc, 4, PAD, 1 + (TITLE_H - 10) / 2, 10, C_GOLD);
+            DrawTVC(dc, _paintTitle + (_collapsed ? "  （已收起）" : ""),
+                PAD + 16, 1, cw - PAD * 3 - BTN_W * 2 - CLOSE_W - 28, TITLE_H,
+                _fTitle, C_TEXT_TITLE);
 
             // 标题栏按钮（带悬停反馈）
             DrawBtn(dc, _btnAdv, _advanced ? "简化" : "进阶", 1);
@@ -947,7 +992,41 @@ namespace VcAdvisor
                     int rh = _rowH[i];
 
                     if (!string.IsNullOrEmpty(row.Text))
-                        DrawT(dc, row.Text, PAD + row.Indent, ry, innerW - row.Indent, rh, FontOf(row.Kind), ColorOf(row.Kind));
+                    {
+                        int baseX = PAD + row.Indent;
+                        int textX = baseX;
+                        int textY = ry;
+                        int textH = rh;
+
+                        if (row.Hero)
+                        {
+                            // 首推：整行高亮底 + 金色大箭头 + 21px 大字
+                            RECT band = new RECT { left = PAD - 4, top = ry - 2, right = cw - PAD + 4, bottom = ry + rh };
+                            FillR(dc, band, C_CARD_HERO);
+                            DrawArrow(dc, baseX, ry + rh / 2 - 6, 12, C_GOLD);
+                            textX += 20;
+                            textY += 8;
+                            textH -= 8;
+                        }
+                        else if (row.Rank > 0 || row.Icon >= 0)
+                        {
+                            if (row.Rank > 0)
+                            {
+                                DrawBadge(dc, row.Rank, baseX, ry + 2, 18,
+                                    row.Rank == 1 ? C_GOLD : C_TEXT_SUB);
+                                textX += 22;
+                            }
+                            if (row.Icon >= 0)
+                            {
+                                DrawRoleIcon(dc, row.Icon, textX, ry + 3, 14,
+                                    row.IconColor >= 0 ? row.IconColor : C_TEXT_SUB);
+                                textX += 18;
+                            }
+                        }
+
+                        DrawT(dc, row.Text, textX, textY, innerW - (textX - PAD), textH,
+                            FontOf(row.Kind), ColorOf(row.Kind));
+                    }
                 }
             }
 
@@ -986,6 +1065,144 @@ namespace VcAdvisor
             catch (Exception e) { Err("FillRect", e); }
         }
 
+        private static IntPtr Brush(int color)
+        {
+            IntPtr br;
+            if (_brushes.TryGetValue(color, out br) && br != IntPtr.Zero) return br;
+            br = CreateSolidBrush(color);
+            if (br != IntPtr.Zero) _brushes[color] = br;
+            return br;
+        }
+
+        /// <summary>用同一颜色填充椭圆（笔与刷同色，等价于无边框色块）。</summary>
+        private static void FillEllipse(IntPtr dc, int x, int y, int w, int h, int color)
+        {
+            IntPtr br = Brush(color);
+            if (br == IntPtr.Zero) return;
+            IntPtr pen = CreatePen(0, 1, color);
+            IntPtr ob = SelectObject(dc, br);
+            IntPtr op = pen != IntPtr.Zero ? SelectObject(dc, pen) : IntPtr.Zero;
+            try { Ellipse(dc, x, y, x + w, y + h); } catch { }
+            if (op != IntPtr.Zero) SelectObject(dc, op);
+            SelectObject(dc, ob);
+            if (pen != IntPtr.Zero) DeleteObject(pen);
+        }
+
+        private static void FillPoly(IntPtr dc, POINT[] pts, int color)
+        {
+            if (pts == null || pts.Length < 3) return;
+            IntPtr br = Brush(color);
+            if (br == IntPtr.Zero) return;
+            IntPtr pen = CreatePen(0, 1, color);
+            IntPtr ob = SelectObject(dc, br);
+            IntPtr op = pen != IntPtr.Zero ? SelectObject(dc, pen) : IntPtr.Zero;
+            try { Polygon(dc, pts, pts.Length); } catch { }
+            if (op != IntPtr.Zero) SelectObject(dc, op);
+            SelectObject(dc, ob);
+            if (pen != IntPtr.Zero) DeleteObject(pen);
+        }
+
+        /// <summary>首推行前的金色三角箭头。</summary>
+        private static void DrawArrow(IntPtr dc, int x, int y, int size, int color)
+        {
+            FillPoly(dc, new POINT[]
+            {
+                new POINT { x = x, y = y },
+                new POINT { x = x + size, y = y + size / 2 },
+                new POINT { x = x, y = y + size },
+            }, color);
+        }
+
+        /// <summary>出牌序号徽章：实心圆 + 深色数字。</summary>
+        private static void DrawBadge(IntPtr dc, int rank, int x, int y, int d, int color)
+        {
+            FillEllipse(dc, x, y, d, d, color);
+            try
+            {
+                if (_fNum != IntPtr.Zero) SelectObject(dc, _fNum);
+                SetTextColor(dc, C_BG);
+                RECT r = new RECT { left = x, top = y + 1, right = x + d, bottom = y + d };
+                DrawTextW(dc, rank.ToString(), -1, ref r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+            catch { }
+        }
+
+        /// <summary>角色图标：全部用 GDI 基本图形绘制，不依赖任何外部图片资源。</summary>
+        private static void DrawRoleIcon(IntPtr dc, int icon, int x, int y, int s, int color)
+        {
+            try
+            {
+                switch (icon)
+                {
+                    case 0: // 法力：水滴
+                        FillPoly(dc, new POINT[] {
+                            new POINT{x=x+s/2,y=y}, new POINT{x=x+s-2,y=y+s/2},
+                            new POINT{x=x+s-3,y=y+s-2}, new POINT{x=x+3,y=y+s-2},
+                            new POINT{x=x+2,y=y+s/2}}, color);
+                        break;
+                    case 1: // 武器：剑
+                        FillPoly(dc, new POINT[] {
+                            new POINT{x=x+s/2,y=y}, new POINT{x=x+s/2+2,y=y+s/2},
+                            new POINT{x=x+s/2,y=y+s-4}, new POINT{x=x+s/2-2,y=y+s/2}}, color);
+                        FillR(dc, new RECT { left = x + 2, top = y + s / 2, right = x + s - 2, bottom = y + s / 2 + 2 }, color);
+                        break;
+                    case 2: // 防御：盾
+                        FillPoly(dc, new POINT[] {
+                            new POINT{x=x+s/2,y=y}, new POINT{x=x+s-1,y=y+2},
+                            new POINT{x=x+s-2,y=y+s/2}, new POINT{x=x+s/2,y=y+s},
+                            new POINT{x=x+2,y=y+s/2}, new POINT{x=x+1,y=y+2}}, color);
+                        break;
+                    case 3: // 经济：金币
+                        FillEllipse(dc, x + 1, y + 2, s - 2, s - 4, color);
+                        FillEllipse(dc, x + s / 2 - 1, y + s / 2 - 1, 2, 2, C_BG);
+                        break;
+                    case 4: // 被动：菱形
+                        FillPoly(dc, new POINT[] {
+                            new POINT{x=x+s/2,y=y}, new POINT{x=x+s-1,y=y+s/2},
+                            new POINT{x=x+s/2,y=y+s}, new POINT{x=x+1,y=y+s/2}}, color);
+                        break;
+                    case 5: // 功能：四角星
+                        FillPoly(dc, new POINT[] {
+                            new POINT{x=x+s/2,y=y}, new POINT{x=x+s/2+2,y=y+s/2-2},
+                            new POINT{x=x+s,y=y+s/2}, new POINT{x=x+s/2+2,y=y+s/2+2},
+                            new POINT{x=x+s/2,y=y+s}, new POINT{x=x+s/2-2,y=y+s/2+2},
+                            new POINT{x=x,y=y+s/2}, new POINT{x=x+s/2-2,y=y+s/2-2}}, color);
+                        break;
+                    case 6: // 角色：头 + 肩
+                        FillEllipse(dc, x + s / 2 - 3, y + 1, 6, 6, color);
+                        FillPoly(dc, new POINT[] {
+                            new POINT{x=x+2,y=y+s-1}, new POINT{x=x+2,y=y+s-4},
+                            new POINT{x=x+s/2,y=y+s-6}, new POINT{x=x+s-2,y=y+s-4},
+                            new POINT{x=x+s-2,y=y+s-1}}, color);
+                        break;
+                    case 7: // 负面：骷髅
+                        FillEllipse(dc, x + 1, y + 1, s - 2, s - 4, color);
+                        FillR(dc, new RECT { left = x + 4, top = y + 4, right = x + 6, bottom = y + 6 }, C_BG);
+                        FillR(dc, new RECT { left = x + s - 6, top = y + 4, right = x + s - 4, bottom = y + 6 }, C_BG);
+                        FillR(dc, new RECT { left = x + s / 2 - 3, top = y + s - 4, right = x + s / 2 + 3, bottom = y + s - 1 }, color);
+                        break;
+                    default: // 未知：方块
+                        FillR(dc, new RECT { left = x + 2, top = y + 3, right = x + s - 2, bottom = y + s - 3 }, color);
+                        break;
+                }
+            }
+            catch (Exception e) { Err("RoleIcon", e); }
+        }
+
+        /// <summary>单行垂直居中绘制（用于标题栏，保证与按钮文字同一基线）。</summary>
+        private static void DrawTVC(IntPtr dc, string text, int x, int y, int w, int h, IntPtr font, int color)
+        {
+            if (string.IsNullOrEmpty(text) || w <= 0) return;
+            try
+            {
+                if (font != IntPtr.Zero) SelectObject(dc, font);
+                SetTextColor(dc, color);
+                RECT r = new RECT { left = x, top = y, right = x + w, bottom = y + h };
+                DrawTextW(dc, text, -1, ref r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+            catch (Exception e) { Err("DrawTextVC", e); }
+        }
+
         private static void DrawT(IntPtr dc, string text, int x, int y, int w, int h, IntPtr font, int color)
         {
             if (string.IsNullOrEmpty(text) || w <= 0) return;
@@ -1014,7 +1231,7 @@ namespace VcAdvisor
         {
             bool hot = _hotBtn == id;
             FillR(dc, r, hot ? C_BTN_HOT : C_BTN);
-            DrawTextCentered(dc, label, r, _fBtn, hot ? C_TEXT_TITLE : C_TEXT);
+            DrawTextCentered(dc, label, r, _fBtn, hot ? C_GOLD : C_TEXT_TITLE);
         }
 
         /// <summary>在给定矩形内水平垂直居中绘制文本（按钮文字居中比左对齐更整齐）。</summary>
@@ -1094,7 +1311,7 @@ namespace VcAdvisor
                                 if (p.x >= cr.right - 16 && p.y >= cr.bottom - 16)
                                     return new IntPtr(HTBOTTOMRIGHT);
                             }
-                            if (p.y < PAD + TITLE_H) return new IntPtr(HTCAPTION);
+                            if (p.y < 1 + TITLE_H) return new IntPtr(HTCAPTION);
                             return new IntPtr(HTCLIENT);
                         }
 
