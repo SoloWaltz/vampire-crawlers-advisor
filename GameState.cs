@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using Il2CppInterop.Runtime.InteropTypes;
 using Nosebleed.Pancake.GameCommands;
 using Nosebleed.Pancake.GameLogic;
 using Nosebleed.Pancake.Models;
 using UnityEngine;
 using GameCardConfig = Nosebleed.Pancake.GameConfig.CardConfig;
+using ArcanaConfig = Nosebleed.Pancake.GameConfig.ShopConfigs.Arcana.ArcanaConfig;
 
 namespace VcAdvisor
 {
@@ -108,6 +110,8 @@ namespace VcAdvisor
         public List<EnemyInfo> Enemies = new List<EnemyInfo>();
         public int IncomingDamage;      // 本回合预计受到的伤害合计
         public List<StatInfo> Stats = new List<StatInfo>();   // 我方增益/减益
+        public List<string> Heroes = new List<string>();      // 英雄组合（战斗界面左中）
+        public List<string> Arcanas = new List<string>();     // 已激活的奥术/增益（画面左上/右上）
 
         // —— 对局记录用：游戏自己的出牌历史（权威来源，比手牌差分可靠）——
         public List<string> TurnPlayed = new List<string>();      // 本回合已打出的卡牌 AssetId（按顺序）
@@ -297,6 +301,8 @@ namespace VcAdvisor
 
                 ReadEnemy(s, player);
                 ReadStats(s, player);
+                ReadHeroes(s, player);
+                ReadArcanas(s, player);
                 ResolveTurn(s, nativeTurnOk);
 
                 if (!s.InEncounter && s.Hand.Count == 0)
@@ -385,6 +391,113 @@ namespace VcAdvisor
                 s.TurnEffective = s.Turn;
                 s.TurnDisplay = s.Turn + 1;
             }
+        }
+
+        /// <summary>读取英雄组合（战斗界面左中的角色头像）。</summary>
+        private static void ReadHeroes(Snapshot s, PlayerModel player)
+        {
+            try
+            {
+                Il2CppSystem.Collections.Generic.List<CardModel> list = null;
+                try
+                {
+                    var fp = player.FccPortraits;
+                    if (fp != null) list = fp._activeCards;
+                }
+                catch { }
+                if (list == null) { try { list = player._activeFccs; } catch { } }
+                if (list == null) { try { list = player._fccCards; } catch { } }
+                if (list == null) return;
+
+                for (int i = 0; i < list.Count; i++)
+                {
+                    var cm = list[i];
+                    if (cm == null) continue;
+                    GameCardConfig cfg = null;
+                    try { cfg = cm.CardConfig; } catch { }
+                    string name = ResolveName(cm, cfg, cfg != null ? cfg.AssetId : null);
+                    if (!string.IsNullOrEmpty(name) && !s.Heroes.Contains(name)) s.Heroes.Add(name);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// 读取已激活的奥术/增益（游戏战斗界面左上、右上的图标）。
+        /// ArcanaModel 没有公开的“激活列表”，但每个奥术都有独立的运行时字段，非空即代表已获得。
+        /// </summary>
+        private static void ReadArcanas(Snapshot s, PlayerModel player)
+        {
+            try
+            {
+                var arc = player.Arcanas;
+                if (arc == null) return;
+                AddArcana(s, arc, arc._battleStance);
+                AddArcana(s, arc, arc._dualWielding);
+                AddArcana(s, arc, arc._execute);
+                AddArcana(s, arc, arc._imNotLeaving);
+                AddArcana(s, arc, arc._jestersHat);
+                AddArcana(s, arc, arc._quickRecover);
+                AddArcana(s, arc, arc._wildStrength);
+                AddArcana(s, arc, arc._yourShield);
+                AddArcana(s, arc, arc._andAnother);
+                AddArcana(s, arc, arc._chainLink);
+                AddArcana(s, arc, arc._makeAScene);
+                AddArcana(s, arc, arc._sharpMind);
+                AddArcana(s, arc, arc._swollenFist);
+                AddArcana(s, arc, arc._manaSyphon);
+                AddArcana(s, arc, arc._experimentalMedicine);
+                AddArcana(s, arc, arc._crawlerBrawler);
+                AddArcana(s, arc, arc._manaBloom);
+                AddArcana(s, arc, arc._infiniteCombo);
+                AddArcana(s, arc, arc._ebbAndCombo);
+                AddArcana(s, arc, arc._chairGame);
+            }
+            catch { }
+        }
+
+        private static void AddArcana(Snapshot s, ArcanaModel arc, ArcanaConfig cfg)
+        {
+            if (cfg == null) return;
+            try { if (arc != null && arc.IsArcanaRuntimeDisabled(cfg)) return; } catch { }
+
+            string name = null;
+            try { if (cfg.NameLoc != null) name = cfg.NameLoc.GetLocalizedString(); } catch { }
+
+            // 奥术表在部分语言下没有条目，GetLocalizedString 会返回
+            // "No translation found for 'ARCANA_NAME_XXX' in Arcanas"。
+            // 这里把 key 还原成可读的英文名，避免界面出现一长串调试文本。
+            if (!string.IsNullOrEmpty(name) && name.StartsWith("No translation found", StringComparison.Ordinal))
+            {
+                string key = null;
+                int a = name.IndexOf('\'');
+                int b = a >= 0 ? name.IndexOf('\'', a + 1) : -1;
+                if (a >= 0 && b > a) key = name.Substring(a + 1, b - a - 1);
+                if (!string.IsNullOrEmpty(key) && key.StartsWith("ARCANA_NAME_", StringComparison.Ordinal))
+                    key = key.Substring("ARCANA_NAME_".Length);
+                name = PrettifyKey(key);
+            }
+
+            if (string.IsNullOrEmpty(name)) { try { name = cfg.Name; } catch { } }
+            if (string.IsNullOrEmpty(name)) { try { name = cfg.AssetId; } catch { } }
+            if (!string.IsNullOrEmpty(name) && !s.Arcanas.Contains(name)) s.Arcanas.Add(name);
+        }
+
+        /// <summary>把 ARCANA_NAME_BATTLE_STANCE 这类 key 转成 "Battle Stance"。</summary>
+        private static string PrettifyKey(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return null;
+            var parts = key.Split('_');
+            var sb = new StringBuilder();
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string p = parts[i];
+                if (string.IsNullOrEmpty(p)) continue;
+                if (sb.Length > 0) sb.Append(' ');
+                sb.Append(char.ToUpperInvariant(p[0]));
+                if (p.Length > 1) sb.Append(p.Substring(1).ToLowerInvariant());
+            }
+            return sb.ToString();
         }
 
         private static void ReadEnemy(Snapshot s, PlayerModel player)
