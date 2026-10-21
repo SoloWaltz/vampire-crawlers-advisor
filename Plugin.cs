@@ -14,7 +14,7 @@ namespace VcAdvisor
         public const string PluginGuid = "vampirecrawlers.advisor";
         public const string PluginName = "Vampire Crawlers 打牌助手";
         // 版本规则：每次内容新增或修改，次版本号 +0.1（1.0.0 → 1.1.0 → 1.2.0 …）
-        public const string PluginVersion = "1.6.0";
+        public const string PluginVersion = "1.6.1";
 
         internal static ManualLogSource Logger;
 
@@ -757,7 +757,6 @@ namespace VcAdvisor
                 sig.Append(s.TurnEffective).Append('|');
                 foreach (var e in s.Enemies)
                     sig.Append(e.Name).Append(':').Append(e.Hp.ToString("0")).Append(':')
-                       .Append(e.ProjectedHp.ToString("0")).Append(':')
                        .Append(e.IncomingDamage).Append(':').Append(string.Join(",", e.Intents.ToArray())).Append(';');
                 foreach (var st in s.Stats) sig.Append(st.Name).Append(st.Value.ToString("0.#")).Append(',');
                 string key = sig.ToString();
