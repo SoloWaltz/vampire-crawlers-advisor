@@ -211,7 +211,7 @@ namespace VcAdvisor
             var sb = new StringBuilder();
             sb.Append("{\"t\":\"end\",\"ts\":").Append(Ts())
               .Append(",\"enc\":").Append(_encSeq)
-              .Append(",\"result\":\"").Append(result).Append('\"')
+              .Append(",\"result\":\"").Append(result).Append('"')
               .Append(",\"turns\":").Append(turns)
               .Append(",\"passTurns\":").Append(_passTurns)
               .Append(",\"hp\":").Append(F(s.Hp))
@@ -263,16 +263,16 @@ namespace VcAdvisor
             sb.Append("{\"t\":\"play\",\"ts\":").Append(Ts())
               .Append(",\"enc\":").Append(_encSeq)
               .Append(",\"turn\":").Append(_lastTurn)
-              .Append(",\"k\":\"").Append(Esc(key)).Append('\"');
+              .Append(",\"k\":\"").Append(Esc(key)).Append('"');
             if (ci != null)
             {
-                sb.Append(",\"name\":\"").Append(Esc(ci.Name)).Append('\"')
+                sb.Append(",\"name\":\"").Append(Esc(ci.Name)).Append('"')
                   .Append(",\"cost\":").Append(ci.Cost)
                   .Append(",\"base\":").Append(ci.BaseCost)
                   .Append(",\"dmg\":").Append(ci.DealtDamage)
                   .Append(",\"manaGain\":").Append(ci.ManaGain)
                   .Append(",\"wild\":").Append(ci.Wild ? "true" : "false")
-                  .Append(",\"role\":\"").Append(CardDb.RoleName(ci.Role)).Append('\"');
+                  .Append(",\"role\":\"").Append(CardDb.RoleName(ci.Role)).Append('"');
             }
             sb.Append(",\"rank\":").Append(rank)
               .Append(",\"top\":").Append(top ? "true" : "false")
@@ -326,7 +326,7 @@ namespace VcAdvisor
             sb.Append("{\"t\":\"state\",\"ts\":").Append(Ts())
               .Append(",\"enc\":").Append(_encSeq)
               .Append(",\"schema\":").Append(CaseLibrary.Schema)
-              .Append(",\"gameVersion\":\"").Append(Esc(GameVersion())).Append('\"')
+              .Append(",\"gameVersion\":\"").Append(Esc(GameVersion())).Append('"')
               .Append(",\"turn\":").Append(s.TurnEffective)
               .Append(",\"hp\":").Append(F(s.Hp))
               .Append(",\"hpMax\":").Append(F(HpDenom(s)))
@@ -345,7 +345,7 @@ namespace VcAdvisor
             {
                 var e = s.Enemies[i];
                 if (i > 0) sb.Append(',');
-                sb.Append("{\"n\":\"").Append(Esc(e.Name)).Append('\"')
+                sb.Append("{\"n\":\"").Append(Esc(e.Name)).Append('"')
                   .Append(",\"hp\":").Append(F(e.Hp))
                   .Append(",\"max\":").Append(F(e.HpMax))
                   .Append(",\"armor\":").Append(F(e.Armor))
@@ -358,20 +358,20 @@ namespace VcAdvisor
             {
                 var st = s.Stats[i];
                 if (i > 0) sb.Append(',');
-                sb.Append("{\"n\":\"").Append(Esc(st.Name)).Append('\"')
+                sb.Append("{\"n\":\"").Append(Esc(st.Name)).Append('"')
                   .Append(",\"v\":").Append(F(st.Value))
                   .Append(",\"good\":").Append(st.Good ? "true" : "false").Append('}');
             }
 
-            sb.Append("],\"heroes\":\"").Append(Esc(string.Join(" / ", s.Heroes.ToArray()))).Append('\"')
-              .Append(",\"arcanas\":\"").Append(Esc(string.Join(" / ", s.Arcanas.ToArray()))).Append('\"')
+            sb.Append("],\"heroes\":\"").Append(Esc(string.Join(" / ", s.Heroes.ToArray()))).Append('"')
+              .Append(",\"arcanas\":\"").Append(Esc(string.Join(" / ", s.Arcanas.ToArray()))).Append('"')
               .Append(",\"hand\":[");
             for (int i = 0; i < s.Hand.Count; i++)
             {
                 var c = s.Hand[i];
                 if (i > 0) sb.Append(',');
-                sb.Append("{\"k\":\"").Append(Esc(c.Key)).Append('\"')
-                  .Append(",\"n\":\"").Append(Esc(c.Name)).Append('\"')
+                sb.Append("{\"k\":\"").Append(Esc(c.Key)).Append('"')
+                  .Append(",\"n\":\"").Append(Esc(c.Name)).Append('"')
                   .Append(",\"cost\":").Append(c.Cost)
                   .Append(",\"base\":").Append(c.BaseCost)
                   .Append(",\"dmg\":").Append(c.DealtDamage)
@@ -581,7 +581,7 @@ namespace VcAdvisor
                 char c = s[i];
                 switch (c)
                 {
-                    case '\"': sb.Append("\\\""); break;
+                    case '"': sb.Append("\\\""); break;
                     case '\\': sb.Append("\\\\"); break;
                     case '\n': sb.Append("\\n"); break;
                     case '\r': sb.Append("\\r"); break;
