@@ -14,7 +14,7 @@ namespace VcAdvisor
         public const string PluginGuid = "vampirecrawlers.advisor";
         public const string PluginName = "Vampire Crawlers 打牌助手";
         // 版本规则：每次内容新增或修改，次版本号 +0.1（1.0.0 → 1.1.0 → 1.2.0 …）
-        public const string PluginVersion = "1.8.2";
+        public const string PluginVersion = "1.8.3";
 
         internal static ManualLogSource Logger;
 

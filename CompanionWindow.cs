@@ -123,6 +123,7 @@ namespace VcAdvisor
         private const int WM_DESTROY = 0x0002;
         private const int WM_HOTKEY = 0x0312;
         private const int WM_TIMER = 0x0113;
+        private const int WM_DISPLAYCHANGE = 0x007E;
         private const int WM_PRINTCLIENT = 0x0318;
         private const int WM_ENTERSIZEMOVE = 0x0231;
         private const int WM_EXITSIZEMOVE = 0x0232;
@@ -215,6 +216,15 @@ namespace VcAdvisor
             public POINT ptMaxPosition;
             public POINT ptMinTrackSize;
             public POINT ptMaxTrackSize;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MONITORINFO
+        {
+            public int cbSize;
+            public RECT rcMonitor;
+            public RECT rcWork;
+            public uint dwFlags;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -414,6 +424,15 @@ namespace VcAdvisor
         private static extern int GetSystemMetrics(int nIndex);
 
         [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+        [DllImport("user32.dll")]
         private static extern int FillRect(IntPtr hDC, ref RECT lprc, IntPtr hbr);
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -528,6 +547,14 @@ namespace VcAdvisor
                     }
                 }
                 _hasSavedPos = _userMoved && _savedX != int.MinValue && _savedY != int.MinValue;
+                // 分辨率/显示器变化后，上次保存的位置可能已在屏幕外：直接丢弃，回到自动贴靠
+                if (_hasSavedPos && !IsOnAnyMonitor(_savedX, _savedY))
+                {
+                    _hasSavedPos = false;
+                    _userMoved = false;
+                    _savedX = int.MinValue;
+                    _savedY = int.MinValue;
+                }
             }
             catch { }
         }
@@ -734,12 +761,111 @@ namespace VcAdvisor
 
         private static RECT _lastGameRect;
         private static bool _lastGameValid;
+        private static RECT _lastWork;
+        private static bool _lastWorkValid;
+
+        /// <summary>取指定窗口所在显示器的工作区（多显示器/高分辨率下必须按显示器取，不能用主屏工作区）。</summary>
+        private static RECT WorkAreaOf(IntPtr hwnd)
+        {
+            var mi = new MONITORINFO();
+            mi.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+            try
+            {
+                IntPtr mon = MonitorFromWindow(hwnd, 2 /*MONITOR_DEFAULTTONEAREST*/);
+                if (mon != IntPtr.Zero && GetMonitorInfoW(mon, ref mi))
+                {
+                    RECT r = mi.rcWork;
+                    if (r.right > r.left && r.bottom > r.top) return r;
+                }
+            }
+            catch { }
+
+            // 兜底：主屏工作区（旧逻辑）
+            RECT work = new RECT();
+            try { SystemParametersInfoW(0x0030 /*SPI_GETWORKAREA*/, 0, ref work, 0); } catch { }
+            if (work.right <= work.left || work.bottom <= work.top)
+            {
+                work.left = 0; work.top = 0; work.right = 1920; work.bottom = 1080;
+            }
+            return work;
+        }
+
+        /// <summary>该坐标是否落在任意一块显示器上（用于校验上次保存的位置）。</summary>
+        private static bool IsOnAnyMonitor(int x, int y)
+        {
+            try
+            {
+                var p = new POINT { x = x + 40, y = y + 20 };
+                return MonitorFromPoint(p, 0 /*MONITOR_DEFAULTTONULL*/) != IntPtr.Zero;
+            }
+            catch { return true; }
+        }
+
+        /// <summary>把窗口整体收回所在显示器的工作区，避免高分辨率/换屏后落到屏幕外。</summary>
+        private static void ClampToWorkArea(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return;
+            try
+            {
+                RECT wr;
+                if (!GetWindowRect(hwnd, out wr)) return;
+                int w = wr.right - wr.left, h = wr.bottom - wr.top;
+                if (w <= 0 || h <= 0) return;
+
+                RECT work = WorkAreaOf(hwnd);
+                int maxX = work.right - w;
+                int maxY = work.bottom - h;
+                if (maxX < work.left) maxX = work.left;
+                if (maxY < work.top) maxY = work.top;
+
+                int x = wr.left, y = wr.top;
+                if (x < work.left) x = work.left;
+                if (x > maxX) x = maxX;
+                if (y < work.top) y = work.top;
+                if (y > maxY) y = maxY;
+
+                if (x != wr.left || y != wr.top)
+                {
+                    SetWindowPos(hwnd, HWND_TOPMOST, x, y, 0, 0,
+                        SWP_NOSIZE | SWP_NOACTIVATE);
+                    Log(string.Format("窗口越界，已收回工作区：({0},{1}) 工作区=({2},{3})-({4},{5})",
+                        x, y, work.left, work.top, work.right, work.bottom));
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>窗口完全不在任何显示器上、或所在显示器工作区发生变化（改分辨率/换屏）时，收回窗口。</summary>
+        private static void EnsureOnScreen()
+        {
+            if (_hwnd == IntPtr.Zero) return;
+            try
+            {
+                RECT work = WorkAreaOf(_hwnd);
+                bool workChanged = !_lastWorkValid ||
+                    work.left != _lastWork.left || work.top != _lastWork.top ||
+                    work.right != _lastWork.right || work.bottom != _lastWork.bottom;
+                _lastWork = work;
+                _lastWorkValid = true;
+
+                if (workChanged)
+                {
+                    ClampToWorkArea(_hwnd);
+                    return;
+                }
+                if (MonitorFromWindow(_hwnd, 0 /*MONITOR_DEFAULTTONULL*/) == IntPtr.Zero)
+                    ClampToWorkArea(_hwnd);
+            }
+            catch { }
+        }
 
         private static void FollowGame()
         {
             if (_hwnd == IntPtr.Zero) return;
             try
             {
+                EnsureOnScreen();
+
                 IntPtr g = FindGameWindow();
                 if (g == IntPtr.Zero) return;
 
@@ -770,18 +896,20 @@ namespace VcAdvisor
                 _lastGameRect = gr;
                 _lastGameValid = true;
 
-                RECT work = new RECT();
-                SystemParametersInfoW(0x0030 /*SPI_GETWORKAREA*/, 0, ref work, 0);
-                if (work.right <= work.left) { work.left = 0; work.top = 0; work.right = 1920; work.bottom = 1080; }
+                RECT work = WorkAreaOf(g);
 
                 int w = _width, h = _height;
                 int x = gr.right + 8;
                 if (x + w > work.right) x = gr.left - w - 8;
-                if (x < work.left) x = work.right - w - 8;
+                if (x + w > work.right) x = work.right - w - 8;   // 两侧都放不下时贴右边缘
                 if (x < work.left) x = work.left;
+
                 int y = gr.top + 40;
+                if (y > work.bottom - 240) y = work.top;
                 if (y + h > work.bottom) y = work.bottom - h;
                 if (y < work.top) y = work.top;
+                if (y + h > work.bottom) h = work.bottom - y;      // 高度超出工作区时压缩，内容仍可滚动
+                if (h < 240) h = 240;
 
                 SetWindowPos(_hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
             }
@@ -827,12 +955,12 @@ namespace VcAdvisor
         {
             try
             {
-                RECT work = new RECT();
-                SystemParametersInfoW(0x0030 /*SPI_GETWORKAREA*/, 0, ref work, 0);
-                if (work.right <= work.left) { work.left = 0; work.top = 0; work.right = 1920; work.bottom = 1080; }
+                RECT work = WorkAreaOf(hWnd);
                 int x = work.right - _width - 8;
                 int y = work.bottom - _height - 8;
                 if (x < work.left) x = work.left;
+                if (y < work.top) y = work.top;
+                if (y + _height > work.bottom) y = work.bottom - _height;
                 if (y < work.top) y = work.top;
 
                 _userMoved = true;      // 用户已"接管"，停止自动跟随
@@ -989,10 +1117,14 @@ namespace VcAdvisor
                 int totalH = contentBottom + PAD;
                 if (totalH < minH) totalH = minH;
 
-                // 高度上限：不允许超出屏幕底部（否则出牌计划会被截掉）
+                // 高度上限：按窗口所在显示器的工作区计算，避免高分屏/多屏下超出屏幕
                 RECT wr0;
                 GetWindowRect(hWnd, out wr0);
-                int maxH = GetSystemMetrics(1) - wr0.top - 24;   // SM_CYSCREEN
+                RECT work = WorkAreaOf(hWnd);
+                int top = wr0.top;
+                if (top < work.top) top = work.top;
+                if (top > work.bottom - 240) top = work.top;
+                int maxH = work.bottom - top - 12;
                 if (maxH < 240) maxH = 240;
                 if (totalH > maxH) totalH = maxH;
 
@@ -1788,6 +1920,16 @@ namespace VcAdvisor
                         {
                             Rescue(hWnd);
                         }
+                        return IntPtr.Zero;
+
+                    case WM_DISPLAYCHANGE:
+                        // 分辨率/显示器数量变化：立即按新工作区收回窗口，不等下一次定时器
+                        _lastGameValid = false;
+                        _lastWorkValid = false;
+                        ClampToWorkArea(hWnd);
+                        Layout(hWnd);
+                        InvalidateRect(hWnd, IntPtr.Zero, false);
+                        Log("显示器/分辨率变化：窗口已重新适配");
                         return IntPtr.Zero;
 
                     case WM_TIMER:
